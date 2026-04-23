@@ -81,44 +81,78 @@ export default function App() {
     }, []);
 
     /**
-     * UPDATED PDF GENERATION
-     * Uses a worker-based approach and a strict "finally" block to prevent the UI from freezing.
+     * ROBUST PDF GENERATION
+     * 1. Uses a Sandbox to prevent React DOM breaking.
+     * 2. Overrides oklch colors (Tailwind 4) with hex for html2canvas compatibility.
      */
-    const handleDownloadPDF = async () => {
+    const handleDownloadPDF = () => {
         const sourceElement = document.getElementById('printable-report');
         if (!sourceElement || isProcessing) return;
         
         setIsProcessing(true);
         setErrorMsg('');
 
-        try {
-            if (!window.html2pdf) {
-                window.print();
-                return;
-            }
+        requestAnimationFrame(() => {
+            requestAnimationFrame(async () => {
+                if (!window.html2pdf) {
+                    setIsProcessing(false);
+                    window.print();
+                    return;
+                }
 
-            const safeFilename = `Inventory_${tenancyInfo.roomIdentifier ? tenancyInfo.roomIdentifier.replace(/[^a-z0-9]/gi, '_') : 'Report'}.pdf`;
+                // 1. Create Sandbox
+                const sandbox = document.createElement('div');
+                sandbox.style.position = 'fixed';
+                sandbox.style.left = '-9999px';
+                sandbox.style.top = '0';
+                sandbox.style.width = '210mm';
+                
+                // 2. Clone Content
+                const clone = sourceElement.cloneNode(true);
+                
+                // 3. APPLY COLOR FIX: Redefine Tailwind 4 variables to standard Hex
+                // This prevents the "Unsupported color function oklch" error
+                clone.style.setProperty('--color-gray-900', '#111827');
+                clone.style.setProperty('--color-gray-800', '#1f2937');
+                clone.style.setProperty('--color-gray-700', '#374151');
+                clone.style.setProperty('--color-gray-500', '#6b7280');
+                clone.style.setProperty('--color-gray-200', '#e5e7eb');
+                clone.style.setProperty('--color-white', '#ffffff');
+                clone.style.color = '#111827';
+                
+                sandbox.appendChild(clone);
+                document.body.appendChild(sandbox);
 
-            const opt = {
-                margin: 10,
-                filename: safeFilename,
-                image: { type: 'jpeg', quality: 0.98 },
-                html2canvas: { scale: 2, useCORS: true, letterRendering: true },
-                jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
-                pagebreak: { mode: ['css', 'legacy'], avoid: ['.break-inside-avoid'] }
-            };
+                const safeFilename = `Inventory_${tenancyInfo.roomIdentifier ? tenancyInfo.roomIdentifier.replace(/[^a-z0-9]/gi, '_') : 'Report'}.pdf`;
 
-            // Using the more stable worker API
-            await window.html2pdf().set(opt).from(sourceElement).save();
-        } catch (err) {
-            console.error("PDF generation failed:", err);
-            setErrorMsg("PDF download failed. However, you can still use your browser's 'Print' option to save as PDF.");
-            // Brief delay to allow error message to be seen before fallback
-            setTimeout(() => window.print(), 1000);
-        } finally {
-            // This block is guaranteed to run, unlocking your buttons
-            setIsProcessing(false);
-        }
+                const opt = {
+                    margin: 10,
+                    filename: safeFilename,
+                    image: { type: 'jpeg', quality: 0.98 },
+                    html2canvas: { 
+                        scale: 2, 
+                        useCORS: true, 
+                        letterRendering: true,
+                        logging: false
+                    },
+                    jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+                    pagebreak: { mode: ['css', 'legacy'], avoid: ['.break-inside-avoid'] }
+                };
+
+                try {
+                    await window.html2pdf().set(opt).from(clone).save();
+                } catch (err) {
+                    console.error("PDF generation failed:", err);
+                    setErrorMsg("PDF generation failed. Falling back to native print.");
+                    window.print();
+                } finally {
+                    setIsProcessing(false);
+                    if (document.body.contains(sandbox)) {
+                        document.body.removeChild(sandbox);
+                    }
+                }
+            });
+        });
     };
 
     const compressImage = (file) => {
@@ -277,6 +311,15 @@ Condition: [Condition]
                         box-shadow: none;
                     }
                     .html2pdf__page-break { page-break-before: always; }
+                }
+                /* PDF FIX: REDEFINE OKLCH COLORS FOR HTML2CANVAS */
+                #printable-report {
+                    --color-gray-900: #111827 !important;
+                    --color-gray-800: #1f2937 !important;
+                    --color-gray-700: #374151 !important;
+                    --color-gray-500: #6b7280 !important;
+                    --color-gray-200: #e5e7eb !important;
+                    --color-white: #ffffff !important;
                 }
                 `}
             </style>
