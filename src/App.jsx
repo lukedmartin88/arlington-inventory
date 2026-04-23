@@ -80,10 +80,10 @@ export default function App() {
         }
     }, []);
 
-    // REWRITTEN: Safer PDF generation with timeout failsafe
+    // REWRITTEN: Safer PDF generation using a cloned DOM node
     const handleDownloadPDF = () => {
-        const element = document.getElementById('printable-report');
-        if (!element) return;
+        const sourceElement = document.getElementById('printable-report');
+        if (!sourceElement) return;
         
         setIsProcessing(true);
         setErrorMsg('');
@@ -96,6 +96,8 @@ export default function App() {
                 return;
             }
 
+            // FIX: Clone the element so the PDF engine cannot mutate and break the live React app
+            const clonedElement = sourceElement.cloneNode(true);
             const safeFilename = `Inventory_${tenancyInfo.roomIdentifier ? tenancyInfo.roomIdentifier.replace(/[^a-z0-9]/gi, '_') : 'Report'}.pdf`;
 
             const opt = {
@@ -107,7 +109,7 @@ export default function App() {
                 pagebreak: { mode: ['css', 'legacy'], avoid: ['.break-inside-avoid'] }
             };
 
-            // Failsafe: If html2pdf freezes (common with external logos), unlock after 10s
+            // Failsafe: If html2pdf freezes, unlock after 12s
             let isFinished = false;
             const fallbackTimeout = setTimeout(() => {
                 if (!isFinished) {
@@ -115,11 +117,11 @@ export default function App() {
                     setErrorMsg("The PDF engine stalled. Falling back to your browser's native print menu.");
                     window.print(); 
                 }
-            }, 10000);
+            }, 12000);
 
             window.html2pdf()
                 .set(opt)
-                .from(element)
+                .from(clonedElement)
                 .save()
                 .then(() => {
                     isFinished = true;
