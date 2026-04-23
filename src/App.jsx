@@ -256,7 +256,7 @@ export default function App() {
         }, 800);
 
         try {
-            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${activeApiKey}`;
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${activeApiKey}`;
             const imageParts = imagesToAnalyse.map(img => ({
                 inlineData: { mimeType: img.mimeType, data: img.data }
             }));
@@ -312,7 +312,7 @@ Condition: [Condition]
         const setReport = isMain ? setMainReport : setEnsuiteReport;
         setPolishing(true);
         try {
-            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${activeApiKey}`;
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${activeApiKey}`;
             const promptText = `Rewrite professional and objective: \n\n${currentText}`;
             const payload = { contents: [{ role: "user", parts: [{ text: promptText }] }] };
             const data = await fetchWithRetry(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
