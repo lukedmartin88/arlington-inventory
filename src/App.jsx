@@ -56,7 +56,7 @@ export default function App() {
     const [isAnalysingMain, setIsAnalysingMain] = useState(false);
     const [isPolishingMain, setIsPolishingMain] = useState(false);
     const [loadingState, setLoadingState] = useState({ active: false, type: '', progress: 0, text: '' });
-    const [isProcessing, setIsProcessing] = useState(false); // Unified processing state
+    const [isProcessing, setIsProcessing] = useState(false); 
     const [errorMsg, setErrorMsg] = useState('');
 
     const handleTenancyChange = (e) => {
@@ -82,59 +82,43 @@ export default function App() {
         };
     }, []);
 
-    const handleDownloadPDF = async () => {
+    // REWRITTEN: Safer PDF generation using standard callbacks to prevent freezing
+    const handleDownloadPDF = () => {
         const element = document.getElementById('printable-report');
-        if (!element || !window.html2pdf) return;
-        setIsProcessing(true);
-        try {
-            const opt = {
-                margin: 10,
-                filename: `Inventory_${tenancyInfo.roomIdentifier || 'Report'}.pdf`,
-                image: { type: 'jpeg', quality: 0.98 },
-                html2canvas: { scale: 2, useCORS: true, letterRendering: true },
-                jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
-                pagebreak: { mode: ['css', 'legacy'], avoid: ['.break-inside-avoid'] }
-            };
-            await window.html2pdf().set(opt).from(element).save();
-        } catch (err) {
-            console.error("PDF failed", err);
-        } finally {
-            setIsProcessing(false);
+        if (!element) return;
+        
+        if (!window.html2pdf) {
+            console.warn("PDF library not loaded. Falling back to browser print.");
+            window.print();
+            return;
         }
-    };
 
-    const handleEmailPDF = async () => {
-        const element = document.getElementById('printable-report');
-        if (!element || !window.html2pdf) return;
         setIsProcessing(true);
         setErrorMsg('');
-        try {
-            const opt = { 
-                margin: 10,
-                filename: `Inventory_${tenancyInfo.roomIdentifier || 'Report'}.pdf`, 
-                image: { type: 'jpeg', quality: 0.98 }, 
-                html2canvas: { scale: 2, useCORS: true, letterRendering: true }, 
-                jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
-                pagebreak: { mode: ['css', 'legacy'], avoid: ['.break-inside-avoid'] }
-            };
-            const pdfBlob = await window.html2pdf().set(opt).from(element).output('blob');
-            const file = new File([pdfBlob], opt.filename, { type: 'application/pdf' });
-            
-            if (navigator.canShare && navigator.canShare({ files: [file] })) {
-                await navigator.share({ 
-                    files: [file], 
-                    title: 'Property Inventory Report',
-                    text: `Please find attached the property inventory report for ${tenancyInfo.propertyAddress || 'the property'}.`
-                });
-            } else {
-                setErrorMsg("Direct sharing is not supported on this browser. The file has been downloaded instead.");
-                await window.html2pdf().set(opt).from(element).save();
-            }
-        } catch (err) {
-            console.error("Share failed", err);
-        } finally {
-            setIsProcessing(false);
-        }
+
+        const safeFilename = `Inventory_${tenancyInfo.roomIdentifier ? tenancyInfo.roomIdentifier.replace(/[^a-z0-9]/gi, '_') : 'Report'}.pdf`;
+
+        const opt = {
+            margin: 10,
+            filename: safeFilename,
+            image: { type: 'jpeg', quality: 0.98 },
+            html2canvas: { scale: 2, useCORS: true, letterRendering: true },
+            jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+            pagebreak: { mode: ['css', 'legacy'], avoid: ['.break-inside-avoid'] }
+        };
+
+        window.html2pdf()
+            .set(opt)
+            .from(element)
+            .save()
+            .then(() => {
+                setIsProcessing(false);
+            })
+            .catch(err => {
+                console.error("PDF generation failed:", err);
+                setIsProcessing(false);
+                setErrorMsg("PDF generation failed. You can use your browser's Print function (Ctrl+P / Cmd+P) to save as PDF.");
+            });
     };
 
     const compressImage = (file) => {
@@ -422,12 +406,12 @@ Condition: [Condition]
                     {step === 3 && (
                         <div className="space-y-6">
                             <div className="flex justify-between print:hidden mb-6">
-                                <button onClick={() => setStep(2)} className="text-gray-600 px-6 py-2 border rounded hover:bg-gray-50">Back to Editor</button>
+                                {/* Disabled while processing so you don't accidentally click it mid-download */}
+                                <button onClick={() => setStep(2)} disabled={isProcessing} className="text-gray-600 px-6 py-2 border rounded hover:bg-gray-50 disabled:bg-gray-100 disabled:text-gray-400 transition">
+                                    Back to Editor
+                                </button>
                                 <div className="flex gap-4">
-                                    <button onClick={handleEmailPDF} disabled={isProcessing} className="bg-blue-600 text-white px-6 py-2 rounded font-bold shadow hover:bg-blue-700 disabled:bg-gray-400 flex items-center gap-2">
-                                        Share / Email
-                                    </button>
-                                    <button onClick={handleDownloadPDF} disabled={isProcessing} className="bg-[#2f314b] text-white px-8 py-2 rounded font-bold shadow hover:bg-[#2f314b]/90 disabled:bg-gray-400 flex items-center gap-2">
+                                    <button onClick={handleDownloadPDF} disabled={isProcessing} className="bg-[#2f314b] text-white px-8 py-2 rounded font-bold shadow hover:bg-[#2f314b]/90 disabled:bg-gray-400 flex items-center gap-2 transition">
                                         {isProcessing ? 'Generating...' : 'Download PDF'}
                                     </button>
                                 </div>
