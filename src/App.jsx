@@ -406,8 +406,9 @@ Condition: [Condition]
         <div className="min-h-screen bg-gray-100 text-gray-800 p-4 sm:p-8 print:p-0 print:bg-white font-sans">
             <div className="max-w-4xl mx-auto bg-white rounded-xl shadow-lg overflow-hidden print:shadow-none">
                 
-                <div className="bg-[#2f314b] text-white p-6 print:hidden flex items-center gap-6">
-                    <h1 className="text-2xl font-bold">Arlington Park Inventory</h1>
+                <div className="bg-[#2f314b] text-white p-4 sm:p-6 print:hidden flex items-center gap-4">
+                    <img src="https://www.arlingtonpark.co.uk/images/arlington-park-site-logo.png.pagespeed.ce.BJSqnaww-K.png" alt="Arlington Park Logo" className="h-10 sm:h-12 object-contain" />
+                    <h1 className="text-xl sm:text-2xl font-bold">Arlington Park Inventory</h1>
                 </div>
 
                 <div className="flex border-b border-gray-200 print:hidden">
@@ -582,7 +583,10 @@ Condition: [Condition]
             </div>
 
             {/* Footer with Settings Link */}
-            <footer className="max-w-4xl mx-auto mt-6 text-center print:hidden pb-4">
+            <footer className="max-w-4xl mx-auto mt-6 text-center print:hidden pb-6">
+                <div className="text-xs text-gray-500 mb-2 px-4">
+                    &copy; {new Date().getFullYear()} Luke Martin - Arlington Park Lettings & Estate Agents, 25a Earlham Rd, Norwich NR2 3AD <a href="https://arlingtonpark.co.uk" target="_blank" rel="noopener noreferrer" className="hover:text-gray-700 underline transition">arlingtonpark.co.uk</a>
+                </div>
                 <button onClick={() => setShowApiSettings(true)} className="text-xs text-gray-400 hover:text-gray-600 underline transition">
                     API Settings
                 </button>
