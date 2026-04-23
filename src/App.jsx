@@ -71,54 +71,70 @@ export default function App() {
     };
 
     useEffect(() => {
-        const script = document.createElement("script");
-        script.src = "https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js";
-        script.async = true;
-        document.body.appendChild(script);
-        return () => {
-            if (document.body.contains(script)) {
-                document.body.removeChild(script);
-            }
-        };
+        if (!document.getElementById('html2pdf-script')) {
+            const script = document.createElement("script");
+            script.id = 'html2pdf-script';
+            script.src = "https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js";
+            script.async = true;
+            document.body.appendChild(script);
+        }
     }, []);
 
-    // REWRITTEN: Safer PDF generation using standard callbacks to prevent freezing
+    // REWRITTEN: Safer PDF generation with timeout failsafe
     const handleDownloadPDF = () => {
         const element = document.getElementById('printable-report');
         if (!element) return;
         
-        if (!window.html2pdf) {
-            console.warn("PDF library not loaded. Falling back to browser print.");
-            window.print();
-            return;
-        }
-
         setIsProcessing(true);
         setErrorMsg('');
 
-        const safeFilename = `Inventory_${tenancyInfo.roomIdentifier ? tenancyInfo.roomIdentifier.replace(/[^a-z0-9]/gi, '_') : 'Report'}.pdf`;
-
-        const opt = {
-            margin: 10,
-            filename: safeFilename,
-            image: { type: 'jpeg', quality: 0.98 },
-            html2canvas: { scale: 2, useCORS: true, letterRendering: true },
-            jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
-            pagebreak: { mode: ['css', 'legacy'], avoid: ['.break-inside-avoid'] }
-        };
-
-        window.html2pdf()
-            .set(opt)
-            .from(element)
-            .save()
-            .then(() => {
+        // Small delay to allow the "Generating..." UI to render
+        setTimeout(() => {
+            if (!window.html2pdf) {
                 setIsProcessing(false);
-            })
-            .catch(err => {
-                console.error("PDF generation failed:", err);
-                setIsProcessing(false);
-                setErrorMsg("PDF generation failed. You can use your browser's Print function (Ctrl+P / Cmd+P) to save as PDF.");
-            });
+                window.print();
+                return;
+            }
+
+            const safeFilename = `Inventory_${tenancyInfo.roomIdentifier ? tenancyInfo.roomIdentifier.replace(/[^a-z0-9]/gi, '_') : 'Report'}.pdf`;
+
+            const opt = {
+                margin: 10,
+                filename: safeFilename,
+                image: { type: 'jpeg', quality: 0.98 },
+                html2canvas: { scale: 2, useCORS: true, letterRendering: true },
+                jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+                pagebreak: { mode: ['css', 'legacy'], avoid: ['.break-inside-avoid'] }
+            };
+
+            // Failsafe: If html2pdf freezes (common with external logos), unlock after 10s
+            let isFinished = false;
+            const fallbackTimeout = setTimeout(() => {
+                if (!isFinished) {
+                    setIsProcessing(false);
+                    setErrorMsg("The PDF engine stalled. Falling back to your browser's native print menu.");
+                    window.print(); 
+                }
+            }, 10000);
+
+            window.html2pdf()
+                .set(opt)
+                .from(element)
+                .save()
+                .then(() => {
+                    isFinished = true;
+                    clearTimeout(fallbackTimeout);
+                    setIsProcessing(false);
+                })
+                .catch(err => {
+                    isFinished = true;
+                    clearTimeout(fallbackTimeout);
+                    console.error("PDF generation failed:", err);
+                    setIsProcessing(false);
+                    setErrorMsg("PDF generation failed. Please use your browser's Print function to save as PDF.");
+                    window.print();
+                });
+        }, 100);
     };
 
     const compressImage = (file) => {
