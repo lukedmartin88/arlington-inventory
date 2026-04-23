@@ -1,34 +1,25 @@
 import React, { useState, useRef, useEffect } from 'react';
 
 // --- API Configuration ---
-// We check for an environment variable first. 
-// If not found, the user can provide it via the UI and we save it to their browser.
 const getEnvKey = () => {
     try {
         const envKey = import.meta.env.VITE_GEMINI_API_KEY;
         if (envKey) return envKey;
-        
         const savedKey = localStorage.getItem('arlington_gemini_api_key');
-        if (savedKey) return savedKey;
-
-        return "";
+        return savedKey || "";
     } catch (e) {
         return "";
     }
 };
 
-// NEW: Smart Fallback Logic
-// Automatically cycles through models depending on whether you are on Vercel or in a Preview environment
 const callGeminiWithFallback = async (payload, activeApiKey) => {
     let lastError = null;
-
-    // Step 1: Expanded list of standard models for 2026
     const defaultModels = [
-        'gemini-2.5-flash',                 // Latest standard model
-        'gemini-2.0-flash',                 // Previous standard model
-        'gemini-2.5-flash-preview-09-2025', // Canvas Preview model
-        'gemini-1.5-flash',                 // Legacy Vercel model
-        'gemini-1.5-pro'                    // Legacy Pro model
+        'gemini-2.5-flash',
+        'gemini-2.0-flash',
+        'gemini-2.5-flash-preview-09-2025',
+        'gemini-1.5-flash',
+        'gemini-1.5-pro'
     ];
     
     for (const model of defaultModels) {
@@ -39,112 +30,34 @@ const callGeminiWithFallback = async (payload, activeApiKey) => {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             });
-            
             if (!response.ok) {
                 const errorData = await response.json();
-                const errorMessage = errorData.error?.message || `HTTP ${response.status}`;
-                throw new Error(errorMessage);
+                throw new Error(errorData.error?.message || `HTTP ${response.status}`);
             }
-            
             return await response.json();
         } catch (error) {
             lastError = error;
-            
-            // If the key is outright invalid, stop and show the error immediately
-            if (error.message.includes('API_KEY_INVALID') || error.message.includes('API key not valid')) {
-                throw new Error("Your API key is invalid. Please check your settings.");
-            }
-            
-            // If the model is rejected because of the environment, smoothly move to the next one
+            if (error.message.includes('API_KEY_INVALID')) throw new Error("Your API key is invalid.");
             continue;
         }
     }
-
-    // Step 2: Auto-discovery with explicit error reporting
-    try {
-        const listUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${activeApiKey || ''}`;
-        const listRes = await fetch(listUrl);
-        
-        if (!listRes.ok) {
-             const listErr = await listRes.json();
-             throw new Error(`Failed to list available models: ${listErr.error?.message}`);
-        }
-
-        const data = await listRes.json();
-        const availableModels = data.models
-            .filter(m => m.supportedGenerationMethods?.includes('generateContent'))
-            .map(m => m.name.replace('models/', ''));
-
-        if (availableModels.length === 0) {
-            throw new Error("Your key is valid, but your Google Cloud project has zero text models enabled.");
-        }
-
-        for (const model of availableModels) {
-            try {
-                const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${activeApiKey || ''}`;
-                const response = await fetch(url, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-                
-                if (response.ok) {
-                    return await response.json();
-                }
-            } catch (err) {
-                continue;
-            }
-        }
-        
-        // If we reach here, we found valid models for the key, but they all failed
-        throw new Error(`Tried all your allowed models (${availableModels.join(', ')}), but they all failed to process the request.`);
-
-    } catch (err) {
-        // Throw the detailed auto-discovery error so you can see exactly what is happening on Vercel
-        throw new Error(`Diagnostic Error: ${err.message}`);
-    }
+    throw lastError;
 };
 
 export default function App() {
     const [step, setStep] = useState(1);
     const [showApiSettings, setShowApiSettings] = useState(false);
-    
-    // API Key state for privacy
     const [activeApiKey, setActiveApiKey] = useState(getEnvKey());
-    
-    // State for Tenancy Details
     const [tenancyInfo, setTenancyInfo] = useState({
-        propertyAddress: '',
-        roomIdentifier: '', 
-        tenantName: '',
-        moveInDate: '', 
-        dateOfInventory: '',
-        clerkName: ''
+        propertyAddress: '', roomIdentifier: '', tenantName: '', moveInDate: '', dateOfInventory: '', clerkName: ''
     });
-
-    const [hasEnsuite, setHasEnsuite] = useState(false);
-
-    // State for Main Room
     const [mainImages, setMainImages] = useState([]);
     const [mainReport, setMainReport] = useState('');
     const [isAnalysingMain, setIsAnalysingMain] = useState(false);
     const [isPolishingMain, setIsPolishingMain] = useState(false);
-
-    // State for Ensuite
-    const [ensuiteImages, setEnsuiteImages] = useState([]);
-    const [ensuiteReport, setEnsuiteReport] = useState('');
-    const [isAnalysingEnsuite, setIsAnalysingEnsuite] = useState(false);
-    const [isPolishingEnsuite, setIsPolishingEnsuite] = useState(false);
-
-    // State for Progress Bar
     const [loadingState, setLoadingState] = useState({ active: false, type: '', progress: 0, text: '' });
-
-    // State for Manager Tools
-    const [isDownloading, setIsDownloading] = useState(false);
+    const [isProcessing, setIsProcessing] = useState(false); // Unified processing state
     const [errorMsg, setErrorMsg] = useState('');
-
-    const mainFileInputRef = useRef(null);
-    const ensuiteFileInputRef = useRef(null);
 
     const handleTenancyChange = (e) => {
         const { name, value } = e.target;
@@ -157,7 +70,6 @@ export default function App() {
         localStorage.setItem('arlington_gemini_api_key', newKey);
     };
 
-    // Dynamically load html2pdf for direct PDF downloading
     useEffect(() => {
         const script = document.createElement("script");
         script.src = "https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js";
@@ -170,143 +82,100 @@ export default function App() {
         };
     }, []);
 
-    const handleDownloadPDF = () => {
+    const handleDownloadPDF = async () => {
         const element = document.getElementById('printable-report');
-        if (!element) return;
-
-        if (window.html2pdf) {
-            setIsDownloading(true);
+        if (!element || !window.html2pdf) return;
+        setIsProcessing(true);
+        try {
             const opt = {
-                margin:       10,
-                filename:     `Inventory_Report_${tenancyInfo.roomIdentifier ? tenancyInfo.roomIdentifier.replace(/[^a-z0-9]/gi, '_') : 'Room'}.pdf`,
-                image:        { type: 'jpeg', quality: 0.98 },
-                html2canvas:  { scale: 2, useCORS: true },
-                jsPDF:        { unit: 'mm', format: 'a4', orientation: 'portrait' },
-                pagebreak:    { mode: ['css', 'legacy'], avoid: ['.break-inside-avoid'] }
+                margin: 10,
+                filename: `Inventory_${tenancyInfo.roomIdentifier || 'Report'}.pdf`,
+                image: { type: 'jpeg', quality: 0.98 },
+                html2canvas: { scale: 2, useCORS: true, letterRendering: true },
+                jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+                pagebreak: { mode: ['css', 'legacy'], avoid: ['.break-inside-avoid'] }
             };
-
-            window.html2pdf().set(opt).from(element).save().then(() => {
-                setIsDownloading(false);
-            }).catch(err => {
-                console.error("PDF generation failed:", err);
-                setIsDownloading(false);
-                window.print(); // Fallback
-            });
-        } else {
-            window.print(); // Fallback
+            await window.html2pdf().set(opt).from(element).save();
+        } catch (err) {
+            console.error("PDF failed", err);
+        } finally {
+            setIsProcessing(false);
         }
     };
 
-    const handleEmailPDF = () => {
+    const handleEmailPDF = async () => {
         const element = document.getElementById('printable-report');
-        if (!element) return;
-
-        if (window.html2pdf) {
-            setIsDownloading(true);
-            setErrorMsg('');
-            const opt = {
-                margin:       10,
-                filename:     `Inventory_Report_${tenancyInfo.roomIdentifier ? tenancyInfo.roomIdentifier.replace(/[^a-z0-9]/gi, '_') : 'Room'}.pdf`,
-                image:        { type: 'jpeg', quality: 0.98 },
-                html2canvas:  { scale: 2, useCORS: true },
-                jsPDF:        { unit: 'mm', format: 'a4', orientation: 'portrait' },
-                pagebreak:    { mode: ['css', 'legacy'], avoid: ['.break-inside-avoid'] }
+        if (!element || !window.html2pdf) return;
+        setIsProcessing(true);
+        setErrorMsg('');
+        try {
+            const opt = { 
+                margin: 10,
+                filename: `Inventory_${tenancyInfo.roomIdentifier || 'Report'}.pdf`, 
+                image: { type: 'jpeg', quality: 0.98 }, 
+                html2canvas: { scale: 2, useCORS: true, letterRendering: true }, 
+                jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+                pagebreak: { mode: ['css', 'legacy'], avoid: ['.break-inside-avoid'] }
             };
-
-            window.html2pdf().set(opt).from(element).output('blob').then(async (pdfBlob) => {
-                const file = new File([pdfBlob], opt.filename, { type: 'application/pdf' });
-                
-                if (navigator.canShare && navigator.canShare({ files: [file] })) {
-                    try {
-                        await navigator.share({
-                            files: [file],
-                            title: 'Property Inventory Report',
-                            text: `Please find attached the property inventory report for ${tenancyInfo.propertyAddress || 'the property'}.`
-                        });
-                    } catch (error) {
-                        console.error('Share cancelled or failed:', error);
-                    }
-                } else {
-                    setErrorMsg("Direct sharing is not supported on this browser. The file has been downloaded instead.");
-                    window.html2pdf().set(opt).from(element).save();
-                }
-                setIsDownloading(false);
-            }).catch(err => {
-                console.error("PDF generation failed:", err);
-                setIsDownloading(false);
-            });
-        } else {
-            setErrorMsg("PDF engine not loaded yet.");
+            const pdfBlob = await window.html2pdf().set(opt).from(element).output('blob');
+            const file = new File([pdfBlob], opt.filename, { type: 'application/pdf' });
+            
+            if (navigator.canShare && navigator.canShare({ files: [file] })) {
+                await navigator.share({ 
+                    files: [file], 
+                    title: 'Property Inventory Report',
+                    text: `Please find attached the property inventory report for ${tenancyInfo.propertyAddress || 'the property'}.`
+                });
+            } else {
+                setErrorMsg("Direct sharing is not supported on this browser. The file has been downloaded instead.");
+                await window.html2pdf().set(opt).from(element).save();
+            }
+        } catch (err) {
+            console.error("Share failed", err);
+        } finally {
+            setIsProcessing(false);
         }
     };
 
-    const compressImage = (file, maxWidth = 1024, maxHeight = 1024, quality = 0.7) => {
-        return new Promise((resolve, reject) => {
+    const compressImage = (file) => {
+        return new Promise((resolve) => {
             const reader = new FileReader();
             reader.readAsDataURL(file);
             reader.onload = (event) => {
                 const img = new Image();
                 img.src = event.target.result;
                 img.onload = () => {
-                    let width = img.width;
-                    let height = img.height;
-                    if (width > height) {
-                        if (width > maxWidth) {
-                            height = Math.round((height * maxWidth) / width);
-                            width = maxWidth;
-                        }
-                    } else {
-                        if (height > maxHeight) {
-                            width = Math.round((width * maxHeight) / height);
-                            height = maxHeight;
-                        }
-                    }
                     const canvas = document.createElement('canvas');
-                    canvas.width = width;
-                    canvas.height = height;
-                    const ctx = canvas.getContext('2d');
-                    ctx.drawImage(img, 0, 0, width, height);
-                    const dataUrl = canvas.toDataURL('image/jpeg', quality);
-                    resolve({
-                        mimeType: 'image/jpeg',
-                        data: dataUrl.split(',')[1]
-                    });
+                    const scale = Math.min(1, 1200 / Math.max(img.width, img.height));
+                    canvas.width = img.width * scale;
+                    canvas.height = img.height * scale;
+                    canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+                    resolve({ mimeType: 'image/jpeg', data: canvas.toDataURL('image/jpeg', 0.8).split(',')[1] });
                 };
-                img.onerror = error => reject(error);
             };
-            reader.onerror = error => reject(error);
         });
     };
 
-    const handleImageUpload = async (e, type) => {
+    const handleImageUpload = async (e) => {
         const files = Array.from(e.target.files);
         if (files.length === 0) return;
         const compressedFiles = await Promise.all(files.map(file => compressImage(file)));
-        if (type === 'main') {
-            setMainImages(prev => [...prev, ...compressedFiles]);
-        } else {
-            setEnsuiteImages(prev => [...prev, ...compressedFiles]);
-        }
+        setMainImages(prev => [...prev, ...compressedFiles]);
     };
 
-    const analyseImages = async (type) => {
-        const isMain = type === 'main';
-        const imagesToAnalyse = isMain ? mainImages : ensuiteImages;
-        const setAnalysing = isMain ? setIsAnalysingMain : setIsAnalysingEnsuite;
-        const setReport = isMain ? setMainReport : setEnsuiteReport;
-        
+    const analyseImages = async () => {
         if (!activeApiKey) {
             setErrorMsg("Missing API Key. Please provide one via API Settings.");
             return;
         }
-        if (imagesToAnalyse.length === 0) {
-            setErrorMsg(`Please provide at least one image for the ${isMain ? 'main room' : 'ensuite'}.`);
+        if (mainImages.length === 0) {
+            setErrorMsg(`Please provide at least one image.`);
             return;
         }
 
-        setAnalysing(true);
+        setIsAnalysingMain(true);
         setErrorMsg('');
-        setLoadingState({ active: true, type: type, progress: 5, text: 'Preparing images...' });
+        setLoadingState({ active: true, progress: 5, text: 'Preparing images...' });
 
         const progressInterval = setInterval(() => {
             setLoadingState(prev => {
@@ -322,26 +191,25 @@ export default function App() {
         }, 800);
 
         try {
-            const imageParts = imagesToAnalyse.map(img => ({
+            const imageParts = mainImages.map(img => ({
                 inlineData: { mimeType: img.mimeType, data: img.data }
             }));
             const roomName = tenancyInfo.roomIdentifier || 'tenant room';
+            
             const formatConstraint = `
-Output the report EXACTLY in this format:
-1. General Overview
-• Cleanliness: [assessment]
-• Decor: [assessment]
-• Flooring: [assessment]
+Output the report EXACTLY in this format using bolding for headings:
+**1. General Overview**
+• **Cleanliness:** [assessment]
+• **Decor:** [assessment]
+• **Flooring:** [assessment]
 
-2. Detailed Item Condition
-• [Item name]: [Description]
+**2. Detailed Item Condition**
+${roomName}
+• **[Item name]:** [Description]
 Condition: [Condition]
 `;
-            const promptText = isMain 
-                ? `Analyse the images of ${roomName} in an HMO. ${formatConstraint} 
-                Distinguish surface stains from structural damage (holes, burns). Be professional. Use UK English. Do not use em dashes.`
-                : `Analyse the ensuite for ${roomName}. ${formatConstraint} 
-                Focus on sanitaryware and tiling. Be professional. Use UK English. Do not use em dashes.`;
+            const promptText = `Analyse the images of ${roomName} in an HMO. ${formatConstraint} 
+            Distinguish surface stains from structural damage (holes, burns). Be professional. Use UK English. Do not use em dashes.`;
 
             const payload = {
                 contents: [{ role: "user", parts: [{ text: promptText }, ...imageParts] }]
@@ -352,37 +220,31 @@ Condition: [Condition]
             clearInterval(progressInterval);
             setLoadingState(prev => ({ ...prev, progress: 100, text: 'Complete!' }));
             const aiDescription = data.candidates?.[0]?.content?.parts?.[0]?.text || "Analysis failed to return text.";
-            setReport(aiDescription.replace(/\*\*/g, ''));
+            setMainReport(aiDescription);
 
-            setTimeout(() => setLoadingState({ active: false, type: '', progress: 0, text: '' }), 1500);
+            setTimeout(() => setLoadingState({ active: false, progress: 0, text: '' }), 1500);
         } catch (error) {
             console.error("API Error:", error);
             clearInterval(progressInterval);
-            setLoadingState({ active: false, type: '', progress: 0, text: '' });
+            setLoadingState({ active: false, progress: 0, text: '' });
             setErrorMsg(`Analysis failed: ${error.message}`);
         } finally {
-            setAnalysing(false);
+            setIsAnalysingMain(false);
         }
     };
 
-    const polishText = async (type) => {
-        const isMain = type === 'main';
-        const currentText = isMain ? mainReport : ensuiteReport;
-        if (!currentText.trim() || !activeApiKey) return;
-        
-        const setPolishing = isMain ? setIsPolishingMain : setIsPolishingEnsuite;
-        const setReport = isMain ? setMainReport : setEnsuiteReport;
-        
-        setPolishing(true);
+    const polishText = async () => {
+        if (!mainReport.trim() || !activeApiKey) return;
+        setIsPolishingMain(true);
         try {
-            const promptText = `Rewrite the following notes to sound highly professional and completely objective. Use UK English. Do not use em dashes: \n\n${currentText}`;
+            const promptText = `Rewrite the following notes to sound highly professional and completely objective. Maintain the exact same formatting, bullet points, and bold asterisks (**). Use UK English. Do not use em dashes: \n\n${mainReport}`;
             const payload = { contents: [{ role: "user", parts: [{ text: promptText }] }] };
             const data = await callGeminiWithFallback(payload, activeApiKey);
-            setReport((data.candidates?.[0]?.content?.parts?.[0]?.text || currentText).replace(/\*\*/g, ''));
+            setMainReport(data.candidates?.[0]?.content?.parts?.[0]?.text || mainReport);
         } catch (error) {
             setErrorMsg(`Failed to polish text: ${error.message}`);
         } finally {
-            setPolishing(false);
+            setIsPolishingMain(false);
         }
     };
 
@@ -399,7 +261,19 @@ Condition: [Condition]
 
     const renderReportText = (text) => {
         if (!text) return null;
-        return text.split('\n').map((line, i) => <p key={i} className="mt-2 text-[15px] text-gray-800">{line}</p>);
+        return text.split('\n').map((line, i) => {
+            const parts = line.split(/(\*\*.*?\*\*)/g);
+            return (
+                <p key={i} className={`text-[15px] text-gray-800 ${line.trim() === '' ? 'h-3' : 'mt-1.5'}`}>
+                    {parts.map((part, j) => {
+                        if (part.startsWith('**') && part.endsWith('**')) {
+                            return <strong key={j} className="font-semibold">{part.slice(2, -2)}</strong>;
+                        }
+                        return <span key={j}>{part}</span>;
+                    })}
+                </p>
+            );
+        });
     };
 
     return (
@@ -500,9 +374,12 @@ Condition: [Condition]
                             <div className="bg-white border border-gray-200 p-6 rounded-lg shadow-sm">
                                 <h3 className="text-lg font-semibold text-gray-900 mb-4">Room Photos</h3>
                                 <div className="p-4 border-2 border-dashed border-[#2f314b]/30 rounded-lg bg-[#2f314b]/5 mb-4">
-                                    <input type="file" multiple accept="image/*" onChange={(e) => handleImageUpload(e, 'main')} className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:bg-[#2f314b] file:text-white cursor-pointer"/>
+                                    <input type="file" multiple accept="image/*" onChange={handleImageUpload} className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:bg-[#2f314b] file:text-white cursor-pointer"/>
+                                    {mainImages.length > 0 && (
+                                        <p className="text-xs text-green-600 mt-2 font-medium">{mainImages.length} images loaded securely.</p>
+                                    )}
                                 </div>
-                                <button onClick={() => analyseImages('main')} disabled={isAnalysingMain || mainImages.length === 0} className="w-full py-3 bg-[#2f314b] text-white rounded-md font-bold disabled:bg-gray-300 transition">
+                                <button onClick={analyseImages} disabled={isAnalysingMain || mainImages.length === 0} className="w-full py-3 bg-[#2f314b] text-white rounded-md font-bold disabled:bg-gray-300 transition">
                                     {isAnalysingMain ? 'Analysing via AI...' : 'Generate Report'}
                                 </button>
                                 
@@ -522,11 +399,15 @@ Condition: [Condition]
                                     <div className="mt-6">
                                         <div className="flex justify-between mb-2">
                                             <label className="text-sm font-bold text-gray-700">Review & Edit:</label>
-                                            <button onClick={() => polishText('main')} disabled={isPolishingMain} className="text-xs bg-[#2f314b]/10 text-[#2f314b] px-3 py-1 rounded hover:bg-[#2f314b]/20">
+                                            <button onClick={polishText} disabled={isPolishingMain} className="text-xs bg-[#2f314b]/10 text-[#2f314b] px-3 py-1 rounded hover:bg-[#2f314b]/20">
                                                 {isPolishingMain ? 'Polishing...' : '✨ Polish Text'}
                                             </button>
                                         </div>
-                                        <textarea value={mainReport} onChange={(e) => setMainReport(e.target.value)} className="w-full p-4 border rounded-md h-64 font-mono text-sm bg-gray-50 focus:ring-[#2f314b]"/>
+                                        <textarea 
+                                            value={mainReport} 
+                                            onChange={(e) => setMainReport(e.target.value)} 
+                                            className="w-full p-4 border rounded-md h-64 font-mono text-sm bg-gray-50 focus:ring-[#2f314b]"
+                                        />
                                     </div>
                                 )}
                             </div>
@@ -543,46 +424,67 @@ Condition: [Condition]
                             <div className="flex justify-between print:hidden mb-6">
                                 <button onClick={() => setStep(2)} className="text-gray-600 px-6 py-2 border rounded hover:bg-gray-50">Back to Editor</button>
                                 <div className="flex gap-4">
-                                    <button onClick={handleEmailPDF} className="bg-blue-600 text-white px-6 py-2 rounded font-bold shadow hover:bg-blue-700 flex items-center gap-2">
+                                    <button onClick={handleEmailPDF} disabled={isProcessing} className="bg-blue-600 text-white px-6 py-2 rounded font-bold shadow hover:bg-blue-700 disabled:bg-gray-400 flex items-center gap-2">
                                         Share / Email
                                     </button>
-                                    <button onClick={handleDownloadPDF} className="bg-[#2f314b] text-white px-8 py-2 rounded font-bold shadow hover:bg-[#2f314b]/90 flex items-center gap-2">
-                                        {isDownloading ? 'Generating...' : 'Download PDF'}
+                                    <button onClick={handleDownloadPDF} disabled={isProcessing} className="bg-[#2f314b] text-white px-8 py-2 rounded font-bold shadow hover:bg-[#2f314b]/90 disabled:bg-gray-400 flex items-center gap-2">
+                                        {isProcessing ? 'Generating...' : 'Download PDF'}
                                     </button>
                                 </div>
                             </div>
 
-                            <div className="bg-white p-10 print:p-0 max-w-[210mm] mx-auto min-h-[297mm] shadow-sm text-gray-900" id="printable-report" style={{fontFamily: "Arial, sans-serif"}}>
-                                <div className="mb-10 text-left">
-                                    <img src="https://www.arlingtonpark.co.uk/images/arlington-park-site-logo.png.pagespeed.ce.BJSqnaww-K.png" alt="Arlington Park" className="h-16 mb-6 object-contain" />
-                                    <h2 className="text-[20px] font-medium">Property Inventory & Schedule of Condition</h2>
+                            {/* PRINTABLE PDF AREA */}
+                            <div className="bg-white p-10 print:p-0 max-w-[210mm] mx-auto shadow-sm text-gray-900" id="printable-report" style={{fontFamily: "Arial, sans-serif"}}>
+                                
+                                <div className="mb-10 text-center flex flex-col items-center">
+                                    <img src="https://www.arlingtonpark.co.uk/images/arlington-park-site-logo.png.pagespeed.ce.BJSqnaww-K.png" alt="Arlington Park" className="h-[4.5rem] mb-6 object-contain" />
+                                    <h2 className="text-[22px] font-bold">Property Inventory & Schedule of Condition</h2>
                                 </div>
                                 
-                                <div className="grid grid-cols-1 gap-2 mb-10 text-[15px] font-medium">
-                                    <div className="flex"><span className="w-48 font-semibold">Property Address:</span> <span>{tenancyInfo.propertyAddress || ''}{tenancyInfo.propertyAddress && tenancyInfo.roomIdentifier ? ', ' : ''}{tenancyInfo.roomIdentifier ? `Room: ${tenancyInfo.roomIdentifier}` : ''}</span></div>
-                                    <div className="flex"><span className="w-48 font-semibold">Tenant Name:</span> <span>{tenancyInfo.tenantName || ''}</span></div>
-                                    <div className="flex"><span className="w-48 font-semibold">Move-in Date:</span> <span>{formatOrdinalDate(tenancyInfo.moveInDate)}</span></div>
-                                    <div className="flex"><span className="w-48 font-semibold">Inspection Date:</span> <span>{formatOrdinalDate(tenancyInfo.dateOfInventory)}</span></div>
-                                    <div className="flex"><span className="w-48 font-semibold">Inspected By:</span> <span>{tenancyInfo.clerkName || ''}</span></div>
+                                <div className="grid grid-cols-1 gap-3 mb-10 text-[15px]">
+                                    <div className="flex"><span className="w-48 font-bold">Property Address:</span> <span>{tenancyInfo.propertyAddress || ''}{tenancyInfo.propertyAddress && tenancyInfo.roomIdentifier ? ', ' : ''}{tenancyInfo.roomIdentifier ? `${tenancyInfo.roomIdentifier}` : ''}</span></div>
+                                    <div className="flex"><span className="w-48 font-bold">Tenant Name:</span> <span>{tenancyInfo.tenantName || ''}</span></div>
+                                    <div className="flex"><span className="w-48 font-bold">Move-in Date:</span> <span>{formatOrdinalDate(tenancyInfo.moveInDate)}</span></div>
+                                    <div className="flex"><span className="w-48 font-bold">Inspection Date:</span> <span>{formatOrdinalDate(tenancyInfo.dateOfInventory)}</span></div>
+                                    <div className="flex"><span className="w-48 font-bold">Inspected By:</span> <span>{tenancyInfo.clerkName || ''}</span></div>
                                 </div>
 
-                                <div className="prose max-w-none">{renderReportText(mainReport)}</div>
+                                <div className="prose max-w-none mb-12">
+                                    {renderReportText(mainReport)}
+                                </div>
 
-                                <div className="mt-16 break-inside-avoid print:break-inside-avoid">
+                                <div className="mt-8 break-inside-avoid">
                                     <h3 className="text-lg font-bold mb-4">Declaration</h3>
                                     <p className="text-[15px] mb-8">This report is a fair and accurate representation of the property at the time of inspection.</p>
-                                    <div className="space-y-4 text-[15px]">
+                                    <div className="space-y-2 text-[15px]">
                                         <p><strong>Signed (Agent):</strong> {tenancyInfo.clerkName || '_________________________'}</p>
                                         <p><strong>Date:</strong> {formatOrdinalDate(tenancyInfo.dateOfInventory) || '_________________________'}</p>
                                     </div>
                                 </div>
+
+                                {/* Photographic Appendix Section */}
+                                {mainImages.length > 0 && (
+                                    <div className="html2pdf__page-break w-full mt-12 pt-10 border-t-2 border-gray-200">
+                                        <h3 className="text-lg font-bold mb-6">Photographic Evidence</h3>
+                                        <div className="grid grid-cols-2 gap-4">
+                                            {mainImages.map((img, idx) => (
+                                                <div key={idx} className="break-inside-avoid mb-2">
+                                                    <img 
+                                                        src={`data:${img.mimeType};base64,${img.data}`} 
+                                                        className="w-full h-auto object-cover rounded shadow-sm border border-gray-300" 
+                                                        alt={`Evidence ${idx + 1}`} 
+                                                    />
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
                             </div>
                         </div>
                     )}
                 </div>
             </div>
 
-            {/* Footer with Settings Link */}
             <footer className="max-w-4xl mx-auto mt-6 text-center print:hidden pb-6">
                 <div className="text-xs text-gray-500 mb-2 px-4">
                     &copy; {new Date().getFullYear()} Luke Martin - Arlington Park Lettings & Estate Agents, 25a Earlham Rd, Norwich NR2 3AD <a href="https://arlingtonpark.co.uk" target="_blank" rel="noopener noreferrer" className="hover:text-gray-700 underline transition">arlingtonpark.co.uk</a>
@@ -592,7 +494,6 @@ Condition: [Condition]
                 </button>
             </footer>
 
-            {/* API Settings Modal */}
             {showApiSettings && (
                 <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 print:hidden p-4">
                     <div className="bg-white p-6 rounded-lg shadow-xl max-w-md w-full">
