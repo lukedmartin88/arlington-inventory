@@ -80,63 +80,76 @@ export default function App() {
         }
     }, []);
 
-    // REWRITTEN: Safer PDF generation using a cloned DOM node
+    /**
+     * ROBUST PDF GENERATION
+     * Creates a hidden sandbox to prevent DOM mutation from breaking React event listeners.
+     */
     const handleDownloadPDF = () => {
         const sourceElement = document.getElementById('printable-report');
-        if (!sourceElement) return;
+        if (!sourceElement || isProcessing) return;
         
         setIsProcessing(true);
         setErrorMsg('');
 
-        // Small delay to allow the "Generating..." UI to render
-        setTimeout(() => {
-            if (!window.html2pdf) {
-                setIsProcessing(false);
-                window.print();
-                return;
-            }
-
-            // FIX: Clone the element so the PDF engine cannot mutate and break the live React app
-            const clonedElement = sourceElement.cloneNode(true);
-            const safeFilename = `Inventory_${tenancyInfo.roomIdentifier ? tenancyInfo.roomIdentifier.replace(/[^a-z0-9]/gi, '_') : 'Report'}.pdf`;
-
-            const opt = {
-                margin: 10,
-                filename: safeFilename,
-                image: { type: 'jpeg', quality: 0.98 },
-                html2canvas: { scale: 2, useCORS: true, letterRendering: true },
-                jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
-                pagebreak: { mode: ['css', 'legacy'], avoid: ['.break-inside-avoid'] }
-            };
-
-            // Failsafe: If html2pdf freezes, unlock after 12s
-            let isFinished = false;
-            const fallbackTimeout = setTimeout(() => {
-                if (!isFinished) {
+        // Use requestAnimationFrame to ensure the "Generating..." state renders before the CPU-heavy task starts
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+                if (!window.html2pdf) {
                     setIsProcessing(false);
-                    setErrorMsg("The PDF engine stalled. Falling back to your browser's native print menu.");
-                    window.print(); 
-                }
-            }, 12000);
-
-            window.html2pdf()
-                .set(opt)
-                .from(clonedElement)
-                .save()
-                .then(() => {
-                    isFinished = true;
-                    clearTimeout(fallbackTimeout);
-                    setIsProcessing(false);
-                })
-                .catch(err => {
-                    isFinished = true;
-                    clearTimeout(fallbackTimeout);
-                    console.error("PDF generation failed:", err);
-                    setIsProcessing(false);
-                    setErrorMsg("PDF generation failed. Please use your browser's Print function to save as PDF.");
                     window.print();
-                });
-        }, 100);
+                    return;
+                }
+
+                // 1. Create an isolated sandbox container
+                const sandbox = document.createElement('div');
+                sandbox.style.position = 'fixed';
+                sandbox.style.left = '-9999px';
+                sandbox.style.top = '0';
+                sandbox.style.width = '210mm'; // Match A4 width
+                
+                // 2. Clone the report content into the sandbox
+                const clone = sourceElement.cloneNode(true);
+                sandbox.appendChild(clone);
+                document.body.appendChild(sandbox);
+
+                const safeFilename = `Inventory_${tenancyInfo.roomIdentifier ? tenancyInfo.roomIdentifier.replace(/[^a-z0-9]/gi, '_') : 'Report'}.pdf`;
+
+                const opt = {
+                    margin: 10,
+                    filename: safeFilename,
+                    image: { type: 'jpeg', quality: 0.98 },
+                    html2canvas: { 
+                        scale: 2, 
+                        useCORS: true, 
+                        letterRendering: true,
+                        logging: false
+                    },
+                    jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+                    pagebreak: { mode: ['css', 'legacy'], avoid: ['.break-inside-avoid'] }
+                };
+
+                // 3. Generate PDF from the sandbox clone
+                window.html2pdf()
+                    .set(opt)
+                    .from(clone)
+                    .save()
+                    .then(() => {
+                        setIsProcessing(false);
+                        if (document.body.contains(sandbox)) {
+                            document.body.removeChild(sandbox);
+                        }
+                    })
+                    .catch(err => {
+                        console.error("PDF generation failed:", err);
+                        setIsProcessing(false);
+                        setErrorMsg("PDF generation failed. Falling back to standard print.");
+                        if (document.body.contains(sandbox)) {
+                            document.body.removeChild(sandbox);
+                        }
+                        window.print();
+                    });
+            });
+        });
     };
 
     const compressImage = (file) => {
@@ -424,7 +437,7 @@ Condition: [Condition]
                     {step === 3 && (
                         <div className="space-y-6">
                             <div className="flex justify-between print:hidden mb-6">
-                                {/* Disabled while processing so you don't accidentally click it mid-download */}
+                                {/* Back button remains enabled unless a download is actively being processed */}
                                 <button onClick={() => setStep(2)} disabled={isProcessing} className="text-gray-600 px-6 py-2 border rounded hover:bg-gray-50 disabled:bg-gray-100 disabled:text-gray-400 transition">
                                     Back to Editor
                                 </button>
@@ -488,7 +501,7 @@ Condition: [Condition]
             </div>
 
             <footer className="max-w-4xl mx-auto mt-6 text-center print:hidden pb-6">
-                <div className="text-xs text-gray-500 mb-2 px-4">
+                <div className="text-xs text-gray-500 mb-2 px-4 text-balance">
                     &copy; {new Date().getFullYear()} Luke Martin - Arlington Park Lettings & Estate Agents, 25a Earlham Rd, Norwich NR2 3AD <a href="https://arlingtonpark.co.uk" target="_blank" rel="noopener noreferrer" className="hover:text-gray-700 underline transition">arlingtonpark.co.uk</a>
                 </div>
                 <button onClick={() => setShowApiSettings(true)} className="text-xs text-gray-400 hover:text-gray-600 underline transition">
