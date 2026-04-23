@@ -84,6 +84,7 @@ export default function App() {
      * ROBUST PDF GENERATION
      * 1. Uses a Sandbox to prevent React DOM breaking.
      * 2. Overrides oklch colors (Tailwind 4) with hex for html2canvas compatibility.
+     * 3. Sets custom dynamic filename: [Tenant Name] [Room Number] [Move in Date]
      */
     const handleDownloadPDF = () => {
         const sourceElement = document.getElementById('printable-report');
@@ -111,7 +112,6 @@ export default function App() {
                 const clone = sourceElement.cloneNode(true);
                 
                 // 3. APPLY COLOR FIX: Redefine Tailwind 4 variables to standard Hex
-                // This prevents the "Unsupported color function oklch" error
                 clone.style.setProperty('--color-gray-900', '#111827');
                 clone.style.setProperty('--color-gray-800', '#1f2937');
                 clone.style.setProperty('--color-gray-700', '#374151');
@@ -123,7 +123,13 @@ export default function App() {
                 sandbox.appendChild(clone);
                 document.body.appendChild(sandbox);
 
-                const safeFilename = `Inventory_${tenancyInfo.roomIdentifier ? tenancyInfo.roomIdentifier.replace(/[^a-z0-9]/gi, '_') : 'Report'}.pdf`;
+                // Construct Dynamic Filename: [Tenant Name] [Room Number] [Move in Date]
+                const tName = tenancyInfo.tenantName ? tenancyInfo.tenantName.trim() : 'Tenant';
+                const rNum = tenancyInfo.roomIdentifier ? tenancyInfo.roomIdentifier.trim() : 'Room';
+                const mDate = tenancyInfo.moveInDate || 'NoDate';
+                const rawFilename = `${tName} ${rNum} ${mDate}`;
+                // Clean up filename characters
+                const safeFilename = rawFilename.replace(/[/\\?%*:|"<>]/g, '-').trim() + '.pdf';
 
                 const opt = {
                     margin: 10,
@@ -215,7 +221,9 @@ export default function App() {
             const roomName = tenancyInfo.roomIdentifier || 'tenant room';
             
             const formatConstraint = `
-Output the report EXACTLY in this format using bolding for headings:
+Output the report EXACTLY in this format using bolding for headings. 
+When describing specific issues or items, refer to the corresponding image using "[Image X]" (e.g., [Image 1], [Image 2]).
+
 **1. General Overview**
 • **Cleanliness:** [assessment]
 • **Decor:** [assessment]
@@ -223,7 +231,7 @@ Output the report EXACTLY in this format using bolding for headings:
 
 **2. Detailed Item Condition**
 ${roomName}
-• **[Item name]:** [Description]
+• **[Item name]:** [Description] [Image X]
 Condition: [Condition]
 `;
             const promptText = `Analyse the images of ${roomName} in an HMO. ${formatConstraint} 
@@ -255,7 +263,7 @@ Condition: [Condition]
         if (!mainReport.trim() || !activeApiKey) return;
         setIsPolishingMain(true);
         try {
-            const promptText = `Rewrite the following notes to sound highly professional and completely objective. Maintain the exact same formatting, bullet points, and bold asterisks (**). Use UK English. Do not use em dashes: \n\n${mainReport}`;
+            const promptText = `Rewrite the following notes to sound highly professional and completely objective. Maintain the exact same formatting, bullet points, bold asterisks (**), and image references like [Image X]. Use UK English. Do not use em dashes: \n\n${mainReport}`;
             const payload = { contents: [{ role: "user", parts: [{ text: promptText }] }] };
             const data = await callGeminiWithFallback(payload, activeApiKey);
             setMainReport(data.candidates?.[0]?.content?.parts?.[0]?.text || mainReport);
@@ -501,7 +509,7 @@ Condition: [Condition]
                                 <div className="mt-8 break-inside-avoid">
                                     <h3 className="text-lg font-bold mb-4">Declaration</h3>
                                     <p className="text-[15px] mb-8">This report is a fair and accurate representation of the property at the time of inspection.</p>
-                                    <div className="space-y-2 text-[15px]">
+                                    <div className="space-y-4 text-[15px]">
                                         <p><strong>Signed (Agent):</strong> {tenancyInfo.clerkName || '_________________________'}</p>
                                         <p><strong>Date:</strong> {formatOrdinalDate(tenancyInfo.dateOfInventory) || '_________________________'}</p>
                                     </div>
@@ -514,6 +522,7 @@ Condition: [Condition]
                                         <div className="grid grid-cols-2 gap-4">
                                             {mainImages.map((img, idx) => (
                                                 <div key={idx} className="break-inside-avoid mb-2">
+                                                    <p className="text-xs font-bold mb-1 text-gray-500 uppercase tracking-wider">Image {idx + 1}</p>
                                                     <img 
                                                         src={`data:${img.mimeType};base64,${img.data}`} 
                                                         className="w-full h-auto object-cover rounded shadow-sm border border-gray-300" 
