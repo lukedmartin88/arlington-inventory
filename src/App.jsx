@@ -22,11 +22,13 @@ const getEnvKey = () => {
 const callGeminiWithFallback = async (payload, activeApiKey) => {
     let lastError = null;
 
-    // Step 1: Try the most common standard models first
+    // Step 1: Expanded list of standard models for 2026
     const defaultModels = [
+        'gemini-2.5-flash',                 // Latest standard model
+        'gemini-2.0-flash',                 // Previous standard model
         'gemini-2.5-flash-preview-09-2025', // Canvas Preview model
-        'gemini-1.5-flash',                 // Standard Vercel model
-        'gemini-1.5-pro'                    // Standard Pro model
+        'gemini-1.5-flash',                 // Legacy Vercel model
+        'gemini-1.5-pro'                    // Legacy Pro model
     ];
     
     for (const model of defaultModels) {
@@ -47,52 +49,60 @@ const callGeminiWithFallback = async (payload, activeApiKey) => {
             return await response.json();
         } catch (error) {
             lastError = error;
-            // If the model is rejected because of the environment, smoothly move to the next one
-            if (error.message.includes('not found') || error.message.includes('not supported') || error.message.includes('404')) {
-                continue;
-            }
+            
             // If the key is outright invalid, stop and show the error immediately
-            if (error.message.includes('API key')) {
-                throw error;
+            if (error.message.includes('API_KEY_INVALID') || error.message.includes('API key not valid')) {
+                throw new Error("Your API key is invalid. Please check your settings.");
             }
+            
+            // If the model is rejected because of the environment, smoothly move to the next one
+            continue;
         }
     }
 
-    // Step 2: If defaults fail, ask Google EXACTLY what this key is allowed to use (ListModels)
+    // Step 2: Auto-discovery with explicit error reporting
     try {
         const listUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${activeApiKey || ''}`;
         const listRes = await fetch(listUrl);
-        if (listRes.ok) {
-            const data = await listRes.json();
-            const availableModels = data.models
-                .filter(m => m.supportedGenerationMethods?.includes('generateContent'))
-                .map(m => m.name.replace('models/', ''));
+        
+        if (!listRes.ok) {
+             const listErr = await listRes.json();
+             throw new Error(`Failed to list available models: ${listErr.error?.message}`);
+        }
 
-            for (const model of availableModels) {
-                try {
-                    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${activeApiKey || ''}`;
-                    const response = await fetch(url, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload)
-                    });
-                    
-                    if (!response.ok) {
-                        const errorData = await response.json();
-                        throw new Error(errorData.error?.message || `HTTP ${response.status}`);
-                    }
+        const data = await listRes.json();
+        const availableModels = data.models
+            .filter(m => m.supportedGenerationMethods?.includes('generateContent'))
+            .map(m => m.name.replace('models/', ''));
+
+        if (availableModels.length === 0) {
+            throw new Error("Your key is valid, but your Google Cloud project has zero text models enabled.");
+        }
+
+        for (const model of availableModels) {
+            try {
+                const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${activeApiKey || ''}`;
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                
+                if (response.ok) {
                     return await response.json();
-                } catch (err) {
-                    lastError = err;
-                    continue;
                 }
+            } catch (err) {
+                continue;
             }
         }
-    } catch (err) {
-        console.error("Auto-discovery failed", err);
-    }
+        
+        // If we reach here, we found valid models for the key, but they all failed
+        throw new Error(`Tried all your allowed models (${availableModels.join(', ')}), but they all failed to process the request.`);
 
-    throw lastError; // If everything fails, show the final error
+    } catch (err) {
+        // Throw the detailed auto-discovery error so you can see exactly what is happening on Vercel
+        throw new Error(`Diagnostic Error: ${err.message}`);
+    }
 };
 
 export default function App() {
@@ -370,7 +380,7 @@ Condition: [Condition]
             const data = await callGeminiWithFallback(payload, activeApiKey);
             setReport((data.candidates?.[0]?.content?.parts?.[0]?.text || currentText).replace(/\*\*/g, ''));
         } catch (error) {
-            setErrorMsg("Failed to polish text.");
+            setErrorMsg(`Failed to polish text: ${error.message}`);
         } finally {
             setPolishing(false);
         }
