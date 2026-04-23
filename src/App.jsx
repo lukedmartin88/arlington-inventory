@@ -20,15 +20,16 @@ const getEnvKey = () => {
 // NEW: Smart Fallback Logic
 // Automatically cycles through models depending on whether you are on Vercel or in a Preview environment
 const callGeminiWithFallback = async (payload, activeApiKey) => {
-    const models = [
-        'gemini-1.5-flash',                 // Standard Vercel model
-        'gemini-2.5-flash-preview-09-2025', // Canvas Preview model
-        'gemini-1.5-pro'                    // Ultimate fallback
-    ];
-    
     let lastError = null;
 
-    for (const model of models) {
+    // Step 1: Try the most common standard models first
+    const defaultModels = [
+        'gemini-2.5-flash-preview-09-2025', // Canvas Preview model
+        'gemini-1.5-flash',                 // Standard Vercel model
+        'gemini-1.5-pro'                    // Standard Pro model
+    ];
+    
+    for (const model of defaultModels) {
         try {
             const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${activeApiKey || ''}`;
             const response = await fetch(url, {
@@ -47,7 +48,7 @@ const callGeminiWithFallback = async (payload, activeApiKey) => {
         } catch (error) {
             lastError = error;
             // If the model is rejected because of the environment, smoothly move to the next one
-            if (error.message.includes('is not found') || error.message.includes('not supported') || error.message.includes('404')) {
+            if (error.message.includes('not found') || error.message.includes('not supported') || error.message.includes('404')) {
                 continue;
             }
             // If the key is outright invalid, stop and show the error immediately
@@ -56,6 +57,41 @@ const callGeminiWithFallback = async (payload, activeApiKey) => {
             }
         }
     }
+
+    // Step 2: If defaults fail, ask Google EXACTLY what this key is allowed to use (ListModels)
+    try {
+        const listUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${activeApiKey || ''}`;
+        const listRes = await fetch(listUrl);
+        if (listRes.ok) {
+            const data = await listRes.json();
+            const availableModels = data.models
+                .filter(m => m.supportedGenerationMethods?.includes('generateContent'))
+                .map(m => m.name.replace('models/', ''));
+
+            for (const model of availableModels) {
+                try {
+                    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${activeApiKey || ''}`;
+                    const response = await fetch(url, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    
+                    if (!response.ok) {
+                        const errorData = await response.json();
+                        throw new Error(errorData.error?.message || `HTTP ${response.status}`);
+                    }
+                    return await response.json();
+                } catch (err) {
+                    lastError = err;
+                    continue;
+                }
+            }
+        }
+    } catch (err) {
+        console.error("Auto-discovery failed", err);
+    }
+
     throw lastError; // If everything fails, show the final error
 };
 
