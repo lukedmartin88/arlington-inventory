@@ -2,31 +2,61 @@ import React, { useState, useRef, useEffect } from 'react';
 
 // --- API Configuration ---
 // We check for an environment variable first. 
-// If not found, the user can provide it via the UI.
+// If not found, the user can provide it via the UI and we save it to their browser.
 const getEnvKey = () => {
     try {
-        return import.meta.env.VITE_GEMINI_API_KEY || "";
+        const envKey = import.meta.env.VITE_GEMINI_API_KEY;
+        if (envKey) return envKey;
+        
+        const savedKey = localStorage.getItem('arlington_gemini_api_key');
+        if (savedKey) return savedKey;
+
+        return "";
     } catch (e) {
         return "";
     }
 };
 
-const fetchWithRetry = async (url, options, retries = 5) => {
-    const delays = [1000, 2000, 4000, 8000, 16000];
-    for (let i = 0; i < retries; i++) {
+// NEW: Smart Fallback Logic
+// Automatically cycles through models depending on whether you are on Vercel or in a Preview environment
+const callGeminiWithFallback = async (payload, activeApiKey) => {
+    const models = [
+        'gemini-1.5-flash',                 // Standard Vercel model
+        'gemini-2.5-flash-preview-09-2025', // Canvas Preview model
+        'gemini-1.5-pro'                    // Ultimate fallback
+    ];
+    
+    let lastError = null;
+
+    for (const model of models) {
         try {
-            const response = await fetch(url, options);
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${activeApiKey || ''}`;
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            
             if (!response.ok) {
                 const errorData = await response.json();
-                const errorMessage = errorData.error?.message || `HTTP error! status: ${response.status}`;
+                const errorMessage = errorData.error?.message || `HTTP ${response.status}`;
                 throw new Error(errorMessage);
             }
+            
             return await response.json();
         } catch (error) {
-            if (i === retries - 1) throw error;
-            await new Promise(res => setTimeout(res, delays[i]));
+            lastError = error;
+            // If the model is rejected because of the environment, smoothly move to the next one
+            if (error.message.includes('is not found') || error.message.includes('not supported') || error.message.includes('404')) {
+                continue;
+            }
+            // If the key is outright invalid, stop and show the error immediately
+            if (error.message.includes('API key')) {
+                throw error;
+            }
         }
     }
+    throw lastError; // If everything fails, show the final error
 };
 
 export default function App() {
@@ -63,14 +93,8 @@ export default function App() {
     // State for Progress Bar
     const [loadingState, setLoadingState] = useState({ active: false, type: '', progress: 0, text: '' });
 
-    // State for Manager Tools (LLM Features)
-    const [maintenanceTasks, setMaintenanceTasks] = useState('');
-    const [isGeneratingTasks, setIsGeneratingTasks] = useState(false);
-    
-    const [tenantGuide, setTenantGuide] = useState('');
-    const [isGeneratingGuide, setIsGeneratingGuide] = useState(false);
+    // State for Manager Tools
     const [isDownloading, setIsDownloading] = useState(false);
-
     const [errorMsg, setErrorMsg] = useState('');
 
     const mainFileInputRef = useRef(null);
@@ -79,6 +103,12 @@ export default function App() {
     const handleTenancyChange = (e) => {
         const { name, value } = e.target;
         setTenancyInfo(prev => ({ ...prev, [name]: value }));
+    };
+
+    const handleApiChange = (e) => {
+        const newKey = e.target.value;
+        setActiveApiKey(newKey);
+        localStorage.setItem('arlington_gemini_api_key', newKey);
     };
 
     // Dynamically load html2pdf for direct PDF downloading
@@ -117,7 +147,7 @@ export default function App() {
                 window.print(); // Fallback
             });
         } else {
-            window.print(); // Fallback if script failed to load
+            window.print(); // Fallback
         }
     };
 
@@ -213,16 +243,6 @@ export default function App() {
         }
     };
 
-    const clearImages = (type) => {
-        if (type === 'main') {
-            setMainImages([]);
-            if (mainFileInputRef.current) mainFileInputRef.current.value = '';
-        } else {
-            setEnsuiteImages([]);
-            if (ensuiteFileInputRef.current) ensuiteFileInputRef.current.value = '';
-        }
-    };
-
     const analyseImages = async (type) => {
         const isMain = type === 'main';
         const imagesToAnalyse = isMain ? mainImages : ensuiteImages;
@@ -230,7 +250,7 @@ export default function App() {
         const setReport = isMain ? setMainReport : setEnsuiteReport;
         
         if (!activeApiKey) {
-            setErrorMsg("Missing API Key. Please provide one in Step 1.");
+            setErrorMsg("Missing API Key. Please provide one via API Settings.");
             return;
         }
         if (imagesToAnalyse.length === 0) {
@@ -256,7 +276,6 @@ export default function App() {
         }, 800);
 
         try {
-            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${activeApiKey}`;
             const imageParts = imagesToAnalyse.map(img => ({
                 inlineData: { mimeType: img.mimeType, data: img.data }
             }));
@@ -274,23 +293,19 @@ Condition: [Condition]
 `;
             const promptText = isMain 
                 ? `Analyse the images of ${roomName} in an HMO. ${formatConstraint} 
-                Distinguish surface stains from structural damage (holes, burns). Be professional. Use UK English.`
+                Distinguish surface stains from structural damage (holes, burns). Be professional. Use UK English. Do not use em dashes.`
                 : `Analyse the ensuite for ${roomName}. ${formatConstraint} 
-                Focus on sanitaryware and tiling. Be professional. Use UK English.`;
+                Focus on sanitaryware and tiling. Be professional. Use UK English. Do not use em dashes.`;
 
             const payload = {
                 contents: [{ role: "user", parts: [{ text: promptText }, ...imageParts] }]
             };
 
-            const data = await fetchWithRetry(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
+            const data = await callGeminiWithFallback(payload, activeApiKey);
 
             clearInterval(progressInterval);
             setLoadingState(prev => ({ ...prev, progress: 100, text: 'Complete!' }));
-            const aiDescription = data.candidates?.[0]?.content?.parts?.[0]?.text || "Analysis failed.";
+            const aiDescription = data.candidates?.[0]?.content?.parts?.[0]?.text || "Analysis failed to return text.";
             setReport(aiDescription.replace(/\*\*/g, ''));
 
             setTimeout(() => setLoadingState({ active: false, type: '', progress: 0, text: '' }), 1500);
@@ -308,14 +323,15 @@ Condition: [Condition]
         const isMain = type === 'main';
         const currentText = isMain ? mainReport : ensuiteReport;
         if (!currentText.trim() || !activeApiKey) return;
+        
         const setPolishing = isMain ? setIsPolishingMain : setIsPolishingEnsuite;
         const setReport = isMain ? setMainReport : setEnsuiteReport;
+        
         setPolishing(true);
         try {
-            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${activeApiKey}`;
-            const promptText = `Rewrite professional and objective: \n\n${currentText}`;
+            const promptText = `Rewrite the following notes to sound highly professional and completely objective. Use UK English. Do not use em dashes: \n\n${currentText}`;
             const payload = { contents: [{ role: "user", parts: [{ text: promptText }] }] };
-            const data = await fetchWithRetry(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+            const data = await callGeminiWithFallback(payload, activeApiKey);
             setReport((data.candidates?.[0]?.content?.parts?.[0]?.text || currentText).replace(/\*\*/g, ''));
         } catch (error) {
             setErrorMsg("Failed to polish text.");
@@ -337,11 +353,11 @@ Condition: [Condition]
 
     const renderReportText = (text) => {
         if (!text) return null;
-        return text.split('\n').map((line, i) => <p key={i} className="mt-2 text-[15px]">{line}</p>);
+        return text.split('\n').map((line, i) => <p key={i} className="mt-2 text-[15px] text-gray-800">{line}</p>);
     };
 
     return (
-        <div className="min-h-screen bg-gray-100 text-gray-800 p-4 sm:p-8 print:p-0 print:bg-white">
+        <div className="min-h-screen bg-gray-100 text-gray-800 p-4 sm:p-8 print:p-0 print:bg-white font-sans">
             <div className="max-w-4xl mx-auto bg-white rounded-xl shadow-lg overflow-hidden print:shadow-none">
                 
                 <div className="bg-[#2f314b] text-white p-6 print:hidden flex items-center gap-6">
@@ -349,9 +365,9 @@ Condition: [Condition]
                 </div>
 
                 <div className="flex border-b border-gray-200 print:hidden">
-                    <button onClick={() => setStep(1)} className={`flex-1 py-4 text-center font-medium ${step === 1 ? 'border-b-2 border-[#2f314b] text-[#2f314b]' : 'text-gray-500'}`}>1. Details</button>
-                    <button onClick={() => setStep(2)} className={`flex-1 py-4 text-center font-medium ${step === 2 ? 'border-b-2 border-[#2f314b] text-[#2f314b]' : 'text-gray-500'}`}>2. Analysis</button>
-                    <button onClick={() => setStep(3)} className={`flex-1 py-4 text-center font-medium ${step === 3 ? 'border-b-2 border-[#2f314b] text-[#2f314b]' : 'text-gray-500'}`}>3. Review</button>
+                    <button onClick={() => setStep(1)} className={`flex-1 py-4 text-center font-medium ${step === 1 ? 'border-b-2 border-[#2f314b] text-[#2f314b]' : 'text-gray-500 hover:bg-gray-50'}`}>1. Details</button>
+                    <button onClick={() => setStep(2)} className={`flex-1 py-4 text-center font-medium ${step === 2 ? 'border-b-2 border-[#2f314b] text-[#2f314b]' : 'text-gray-500 hover:bg-gray-50'}`}>2. Analysis</button>
+                    <button onClick={() => setStep(3)} className={`flex-1 py-4 text-center font-medium ${step === 3 ? 'border-b-2 border-[#2f314b] text-[#2f314b]' : 'text-gray-500 hover:bg-gray-50'}`}>3. Review</button>
                 </div>
 
                 <div className="p-6 sm:p-8">
@@ -426,46 +442,92 @@ Condition: [Condition]
                                     </div>
                                 </div>
                             </div>
-                            <button onClick={() => setStep(2)} className="bg-[#2f314b] text-white px-8 py-3 rounded-md font-medium mt-4">Next</button>
+                            <button onClick={() => setStep(2)} className="bg-[#2f314b] text-white px-8 py-3 rounded-md font-medium mt-4 shadow hover:bg-[#2f314b]/90 transition">Next</button>
                         </div>
                     )}
 
                     {step === 2 && (
                         <div className="space-y-8">
                             {errorMsg && <div className="p-4 bg-red-50 text-red-700 rounded-md text-sm border border-red-200">{errorMsg}</div>}
-                            <div className="bg-white border p-6 rounded-lg">
-                                <h3 className="font-bold mb-4">Room Photos</h3>
-                                <input type="file" multiple accept="image/*" onChange={(e) => handleImageUpload(e, 'main')} className="mb-4 block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:bg-[#2f314b] file:text-white"/>
-                                <button onClick={() => analyseImages('main')} disabled={isAnalysingMain || mainImages.length === 0} className="w-full py-3 bg-[#2f314b] text-white rounded-md font-bold disabled:bg-gray-300">
-                                    {isAnalysingMain ? 'Analysing...' : 'Generate Report'}
+                            
+                            <div className="bg-white border border-gray-200 p-6 rounded-lg shadow-sm">
+                                <h3 className="text-lg font-semibold text-gray-900 mb-4">Room Photos</h3>
+                                <div className="p-4 border-2 border-dashed border-[#2f314b]/30 rounded-lg bg-[#2f314b]/5 mb-4">
+                                    <input type="file" multiple accept="image/*" onChange={(e) => handleImageUpload(e, 'main')} className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:bg-[#2f314b] file:text-white cursor-pointer"/>
+                                </div>
+                                <button onClick={() => analyseImages('main')} disabled={isAnalysingMain || mainImages.length === 0} className="w-full py-3 bg-[#2f314b] text-white rounded-md font-bold disabled:bg-gray-300 transition">
+                                    {isAnalysingMain ? 'Analysing via AI...' : 'Generate Report'}
                                 </button>
-                                {mainReport && <textarea value={mainReport} onChange={(e) => setMainReport(e.target.value)} className="w-full mt-4 p-4 border rounded-md h-64 font-mono text-sm bg-gray-50"/>}
+                                
+                                {loadingState.active && (
+                                    <div className="mt-4 bg-[#2f314b]/5 p-4 rounded-lg border border-[#2f314b]/10">
+                                        <div className="flex justify-between text-xs text-[#2f314b] font-bold mb-2 uppercase tracking-wide">
+                                            <span>{loadingState.text}</span>
+                                            <span>{Math.round(loadingState.progress)}%</span>
+                                        </div>
+                                        <div className="w-full bg-gray-200 rounded-full h-2.5 overflow-hidden">
+                                            <div className="bg-[#2f314b] h-2.5 rounded-full transition-all duration-300" style={{ width: `${loadingState.progress}%` }}></div>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {mainReport && (
+                                    <div className="mt-6">
+                                        <div className="flex justify-between mb-2">
+                                            <label className="text-sm font-bold text-gray-700">Review & Edit:</label>
+                                            <button onClick={() => polishText('main')} disabled={isPolishingMain} className="text-xs bg-[#2f314b]/10 text-[#2f314b] px-3 py-1 rounded hover:bg-[#2f314b]/20">
+                                                {isPolishingMain ? 'Polishing...' : '✨ Polish Text'}
+                                            </button>
+                                        </div>
+                                        <textarea value={mainReport} onChange={(e) => setMainReport(e.target.value)} className="w-full p-4 border rounded-md h-64 font-mono text-sm bg-gray-50 focus:ring-[#2f314b]"/>
+                                    </div>
+                                )}
                             </div>
-                            <button onClick={() => setStep(3)} className="bg-[#2f314b] text-white px-8 py-3 rounded-md font-bold">Final Review</button>
+                            
+                            <div className="flex justify-between">
+                                <button onClick={() => setStep(1)} className="text-gray-600 px-6 py-2 border rounded hover:bg-gray-50">Back</button>
+                                <button onClick={() => setStep(3)} className="bg-[#2f314b] text-white px-8 py-3 rounded-md font-bold shadow hover:bg-[#2f314b]/90 transition">Final Review</button>
+                            </div>
                         </div>
                     )}
 
                     {step === 3 && (
                         <div className="space-y-6">
                             <div className="flex justify-between print:hidden mb-6">
-                                <button onClick={() => setStep(2)} className="text-gray-600 px-4 py-2 border rounded">Back</button>
+                                <button onClick={() => setStep(2)} className="text-gray-600 px-6 py-2 border rounded hover:bg-gray-50">Back to Editor</button>
                                 <div className="flex gap-4">
-                                    <button onClick={handleEmailPDF} className="bg-blue-600 text-white px-6 py-2 rounded font-bold shadow">Share / Email</button>
-                                    <button onClick={handleDownloadPDF} className="bg-[#2f314b] text-white px-6 py-2 rounded font-bold shadow">Download PDF</button>
+                                    <button onClick={handleEmailPDF} className="bg-blue-600 text-white px-6 py-2 rounded font-bold shadow hover:bg-blue-700 flex items-center gap-2">
+                                        Share / Email
+                                    </button>
+                                    <button onClick={handleDownloadPDF} className="bg-[#2f314b] text-white px-8 py-2 rounded font-bold shadow hover:bg-[#2f314b]/90 flex items-center gap-2">
+                                        {isDownloading ? 'Generating...' : 'Download PDF'}
+                                    </button>
                                 </div>
                             </div>
-                            <div className="bg-white p-10 print:p-0 max-w-[210mm] mx-auto min-h-[297mm] shadow-sm" id="printable-report">
-                                <img src="https://www.arlingtonpark.co.uk/images/arlington-park-site-logo.png.pagespeed.ce.BJSqnaww-K.png" alt="Arlington Park" className="h-12 mb-6 object-contain" />
-                                <h2 className="text-xl font-bold mb-6">Schedule of Condition</h2>
-                                <div className="space-y-2 mb-10 text-sm">
-                                    <p><strong>Property:</strong> {tenancyInfo.propertyAddress} {tenancyInfo.roomIdentifier}</p>
-                                    <p><strong>Date:</strong> {formatOrdinalDate(tenancyInfo.dateOfInventory)}</p>
-                                    <p><strong>Clerk:</strong> {tenancyInfo.clerkName}</p>
+
+                            <div className="bg-white p-10 print:p-0 max-w-[210mm] mx-auto min-h-[297mm] shadow-sm text-gray-900" id="printable-report" style={{fontFamily: "Arial, sans-serif"}}>
+                                <div className="mb-10 text-left">
+                                    <img src="https://www.arlingtonpark.co.uk/images/arlington-park-site-logo.png.pagespeed.ce.BJSqnaww-K.png" alt="Arlington Park" className="h-16 mb-6 object-contain" />
+                                    <h2 className="text-[20px] font-medium">Property Inventory & Schedule of Condition</h2>
                                 </div>
+                                
+                                <div className="grid grid-cols-1 gap-2 mb-10 text-[15px] font-medium">
+                                    <div className="flex"><span className="w-48 font-semibold">Property Address:</span> <span>{tenancyInfo.propertyAddress || ''}{tenancyInfo.propertyAddress && tenancyInfo.roomIdentifier ? ', ' : ''}{tenancyInfo.roomIdentifier ? `Room: ${tenancyInfo.roomIdentifier}` : ''}</span></div>
+                                    <div className="flex"><span className="w-48 font-semibold">Tenant Name:</span> <span>{tenancyInfo.tenantName || ''}</span></div>
+                                    <div className="flex"><span className="w-48 font-semibold">Move-in Date:</span> <span>{formatOrdinalDate(tenancyInfo.moveInDate)}</span></div>
+                                    <div className="flex"><span className="w-48 font-semibold">Inspection Date:</span> <span>{formatOrdinalDate(tenancyInfo.dateOfInventory)}</span></div>
+                                    <div className="flex"><span className="w-48 font-semibold">Inspected By:</span> <span>{tenancyInfo.clerkName || ''}</span></div>
+                                </div>
+
                                 <div className="prose max-w-none">{renderReportText(mainReport)}</div>
-                                <div className="mt-16 pt-8 border-t">
-                                    <p className="text-sm"><strong>Signed:</strong> ___________________________</p>
-                                    <p className="text-xs text-gray-400 mt-2">Generated on {formatOrdinalDate(new Date().toISOString())}</p>
+
+                                <div className="mt-16 break-inside-avoid print:break-inside-avoid">
+                                    <h3 className="text-lg font-bold mb-4">Declaration</h3>
+                                    <p className="text-[15px] mb-8">This report is a fair and accurate representation of the property at the time of inspection.</p>
+                                    <div className="space-y-4 text-[15px]">
+                                        <p><strong>Signed (Agent):</strong> {tenancyInfo.clerkName || '_________________________'}</p>
+                                        <p><strong>Date:</strong> {formatOrdinalDate(tenancyInfo.dateOfInventory) || '_________________________'}</p>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -475,10 +537,7 @@ Condition: [Condition]
 
             {/* Footer with Settings Link */}
             <footer className="max-w-4xl mx-auto mt-6 text-center print:hidden pb-4">
-                <button 
-                    onClick={() => setShowApiSettings(true)} 
-                    className="text-xs text-gray-400 hover:text-gray-600 underline transition"
-                >
+                <button onClick={() => setShowApiSettings(true)} className="text-xs text-gray-400 hover:text-gray-600 underline transition">
                     API Settings
                 </button>
             </footer>
@@ -491,18 +550,15 @@ Condition: [Condition]
                         <input 
                             type="password" 
                             value={activeApiKey} 
-                            onChange={(e) => setActiveApiKey(e.target.value)}
+                            onChange={handleApiChange}
                             placeholder="Gemini API Key..."
                             className="w-full p-2 text-sm border border-gray-300 rounded focus:ring-[#2f314b] mb-2"
                         />
                         <p className="text-[11px] text-gray-500 mb-6">
-                            If you have set VITE_GEMINI_API_KEY in Vercel, this will auto-fill. Otherwise, paste your key here to use the app immediately.
+                            This key is securely saved to your browser's local storage. You will not need to enter it again on this device.
                         </p>
                         <div className="flex justify-end">
-                            <button 
-                                onClick={() => setShowApiSettings(false)} 
-                                className="bg-[#2f314b] text-white px-6 py-2 rounded-md font-medium hover:bg-[#2f314b]/90 transition"
-                            >
+                            <button onClick={() => setShowApiSettings(false)} className="bg-[#2f314b] text-white px-6 py-2 rounded-md font-medium hover:bg-[#2f314b]/90 transition">
                                 Done
                             </button>
                         </div>
