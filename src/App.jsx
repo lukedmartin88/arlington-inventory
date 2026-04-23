@@ -55,7 +55,7 @@ export default function App() {
     const [mainReport, setMainReport] = useState('');
     const [isAnalysingMain, setIsAnalysingMain] = useState(false);
     const [isPolishingMain, setIsPolishingMain] = useState(false);
-    const [loadingState, setLoadingState] = useState({ active: false, type: '', progress: 0, text: '' });
+    const [loadingState, setLoadingState] = useState({ active: false, progress: 0, text: '' });
     const [isProcessing, setIsProcessing] = useState(false); 
     const [errorMsg, setErrorMsg] = useState('');
 
@@ -81,75 +81,44 @@ export default function App() {
     }, []);
 
     /**
-     * ROBUST PDF GENERATION
-     * Creates a hidden sandbox to prevent DOM mutation from breaking React event listeners.
+     * UPDATED PDF GENERATION
+     * Uses a worker-based approach and a strict "finally" block to prevent the UI from freezing.
      */
-    const handleDownloadPDF = () => {
+    const handleDownloadPDF = async () => {
         const sourceElement = document.getElementById('printable-report');
         if (!sourceElement || isProcessing) return;
         
         setIsProcessing(true);
         setErrorMsg('');
 
-        // Use requestAnimationFrame to ensure the "Generating..." state renders before the CPU-heavy task starts
-        requestAnimationFrame(() => {
-            requestAnimationFrame(() => {
-                if (!window.html2pdf) {
-                    setIsProcessing(false);
-                    window.print();
-                    return;
-                }
+        try {
+            if (!window.html2pdf) {
+                window.print();
+                return;
+            }
 
-                // 1. Create an isolated sandbox container
-                const sandbox = document.createElement('div');
-                sandbox.style.position = 'fixed';
-                sandbox.style.left = '-9999px';
-                sandbox.style.top = '0';
-                sandbox.style.width = '210mm'; // Match A4 width
-                
-                // 2. Clone the report content into the sandbox
-                const clone = sourceElement.cloneNode(true);
-                sandbox.appendChild(clone);
-                document.body.appendChild(sandbox);
+            const safeFilename = `Inventory_${tenancyInfo.roomIdentifier ? tenancyInfo.roomIdentifier.replace(/[^a-z0-9]/gi, '_') : 'Report'}.pdf`;
 
-                const safeFilename = `Inventory_${tenancyInfo.roomIdentifier ? tenancyInfo.roomIdentifier.replace(/[^a-z0-9]/gi, '_') : 'Report'}.pdf`;
+            const opt = {
+                margin: 10,
+                filename: safeFilename,
+                image: { type: 'jpeg', quality: 0.98 },
+                html2canvas: { scale: 2, useCORS: true, letterRendering: true },
+                jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+                pagebreak: { mode: ['css', 'legacy'], avoid: ['.break-inside-avoid'] }
+            };
 
-                const opt = {
-                    margin: 10,
-                    filename: safeFilename,
-                    image: { type: 'jpeg', quality: 0.98 },
-                    html2canvas: { 
-                        scale: 2, 
-                        useCORS: true, 
-                        letterRendering: true,
-                        logging: false
-                    },
-                    jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
-                    pagebreak: { mode: ['css', 'legacy'], avoid: ['.break-inside-avoid'] }
-                };
-
-                // 3. Generate PDF from the sandbox clone
-                window.html2pdf()
-                    .set(opt)
-                    .from(clone)
-                    .save()
-                    .then(() => {
-                        setIsProcessing(false);
-                        if (document.body.contains(sandbox)) {
-                            document.body.removeChild(sandbox);
-                        }
-                    })
-                    .catch(err => {
-                        console.error("PDF generation failed:", err);
-                        setIsProcessing(false);
-                        setErrorMsg("PDF generation failed. Falling back to standard print.");
-                        if (document.body.contains(sandbox)) {
-                            document.body.removeChild(sandbox);
-                        }
-                        window.print();
-                    });
-            });
-        });
+            // Using the more stable worker API
+            await window.html2pdf().set(opt).from(sourceElement).save();
+        } catch (err) {
+            console.error("PDF generation failed:", err);
+            setErrorMsg("PDF download failed. However, you can still use your browser's 'Print' option to save as PDF.");
+            // Brief delay to allow error message to be seen before fallback
+            setTimeout(() => window.print(), 1000);
+        } finally {
+            // This block is guaranteed to run, unlocking your buttons
+            setIsProcessing(false);
+        }
     };
 
     const compressImage = (file) => {
@@ -293,6 +262,25 @@ Condition: [Condition]
 
     return (
         <div className="min-h-screen bg-gray-100 text-gray-800 p-4 sm:p-8 print:p-0 print:bg-white font-sans">
+            <style>
+                {`
+                @media print {
+                    body * { visibility: hidden; }
+                    #printable-report, #printable-report * { visibility: visible; }
+                    #printable-report { 
+                        position: absolute; 
+                        left: 0; 
+                        top: 0; 
+                        width: 100%; 
+                        padding: 0; 
+                        margin: 0; 
+                        box-shadow: none;
+                    }
+                    .html2pdf__page-break { page-break-before: always; }
+                }
+                `}
+            </style>
+
             <div className="max-w-4xl mx-auto bg-white rounded-xl shadow-lg overflow-hidden print:shadow-none">
                 
                 <div className="bg-[#2f314b] text-white p-4 sm:p-6 print:hidden flex items-center gap-4">
@@ -437,7 +425,6 @@ Condition: [Condition]
                     {step === 3 && (
                         <div className="space-y-6">
                             <div className="flex justify-between print:hidden mb-6">
-                                {/* Back button remains enabled unless a download is actively being processed */}
                                 <button onClick={() => setStep(2)} disabled={isProcessing} className="text-gray-600 px-6 py-2 border rounded hover:bg-gray-50 disabled:bg-gray-100 disabled:text-gray-400 transition">
                                     Back to Editor
                                 </button>
