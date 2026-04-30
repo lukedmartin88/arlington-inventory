@@ -189,7 +189,8 @@ export default function App() {
                 sandboxRef.style.position = 'fixed';
                 sandboxRef.style.left = '-9999px';
                 sandboxRef.style.top = '0';
-                sandboxRef.style.width = '210mm';
+                // Strict pixel width ensures text scales down proportionally without getting inflated
+                sandboxRef.style.width = '800px';
 
                 const clone = sourceElement.cloneNode(true);
                 clone.style.setProperty('--color-gray-900', '#111827');
@@ -333,7 +334,7 @@ ${roomName}
 Condition: [Condition]
 `;
             const promptText = `Analyse the images of ${roomName} in an HMO. ${formatConstraint} 
-            Distinguish surface stains from structural damage (holes, burns). Be professional. Use UK English. Do not use em dashes.`;
+            Distinguish surface stains from structural damage (holes, burns). Be highly thorough in your analysis. Pay extremely close attention to detail: explicitly identify, count, and note multiples of items (e.g., all light fittings, all plug sockets) and explicitly describe any minor defects found, such as cracks in mirrors, marks, or scuffs. DO NOT suggest any improvements, recommendations, repairs, or fixes required under any circumstances; only strictly state the objective current condition. Be professional. Use UK English. Do not use em dashes.`;
 
             const payload = {
                 contents: [{ role: "user", parts: [{ text: promptText }, ...imageParts] }]
@@ -361,7 +362,7 @@ Condition: [Condition]
         if (!mainReport.trim() || !activeApiKey) return;
         setIsPolishingMain(true);
         try {
-            const promptText = `Rewrite the following notes to sound highly professional and completely objective. Maintain exact formatting, bolding, and image references like [Image X]. Use UK English only. Do not use em dashes: \n\n${mainReport}`;
+            const promptText = `Rewrite the following notes to sound highly professional and completely objective. Maintain exact formatting, bolding, and image references like [Image X]. Ensure the tone strictly reports condition and DOES NOT suggest any improvements, recommendations, or repairs required. Use UK English only. Do not use em dashes: \n\n${mainReport}`;
             const payload = { contents: [{ role: "user", parts: [{ text: promptText }] }] };
             const data = await callGeminiWithFallback(payload, activeApiKey);
             setMainReport(data.candidates?.[0]?.content?.parts?.[0]?.text || mainReport);
@@ -372,7 +373,6 @@ Condition: [Condition]
         }
     };
 
-    // FIXED TYPOGRAPHY: Switch entirely to rigid pixel values to prevent inflation during PDF render
     const renderReportText = (text) => {
         if (!text) return null;
         return text.split('\n').map((line, i) => {
@@ -391,7 +391,7 @@ Condition: [Condition]
                 segments.push(<span key={`t-${lastIndex}`}>{line.slice(lastIndex)}</span>);
             }
             return (
-                <p key={i} className={`text-[13px] text-gray-800 leading-[1.6] ${line.trim() === '' ? 'h-2' : 'mt-1.5'}`}>
+                <p key={i} className={`text-[12px] text-gray-800 leading-[1.6] ${line.trim() === '' ? 'h-2' : 'mt-1.5'}`}>
                     {segments.length > 0 ? segments : line}
                 </p>
             );
@@ -638,15 +638,15 @@ Condition: [Condition]
                                 </div>
                             </div>
 
-                            {/* PRINTABLE PDF AREA */}
+                            {/* PRINTABLE PDF AREA - All fonts completely pixel-locked for PDF */}
                             <div className="bg-white p-10 print:p-0 max-w-[210mm] mx-auto shadow-sm text-gray-900" id="printable-report" style={{ fontFamily: "Arial, sans-serif" }}>
 
                                 <div className="mb-8 text-center flex flex-col items-center">
                                     <img src={logoSrc} alt="Arlington Park" crossOrigin="anonymous" style={{ height: '72px' }} className="mb-4 object-contain" />
-                                    <h2 className="text-[20px] font-bold">Property Inventory & Schedule of Condition</h2>
+                                    <h2 className="text-[18px] font-bold">Property Inventory & Schedule of Condition</h2>
                                 </div>
 
-                                <div className="grid grid-cols-1 gap-2 mb-8 text-[13px]">
+                                <div className="grid grid-cols-1 gap-2 mb-8 text-[12px]">
                                     <div className="flex">
                                         <span className="w-48 font-bold">Property Address:</span>
                                         <span>
@@ -666,9 +666,9 @@ Condition: [Condition]
                                 </div>
 
                                 <div className="mt-8 break-inside-avoid">
-                                    <h3 className="text-[16px] font-bold mb-4">Declaration</h3>
-                                    <p className="text-[13px] mb-6">This report is a fair and accurate representation of the property at the time of inspection.</p>
-                                    <div className="space-y-4 text-[13px]">
+                                    <h3 className="text-[14px] font-bold mb-4">Declaration</h3>
+                                    <p className="text-[12px] mb-6">This report is a fair and accurate representation of the property at the time of inspection.</p>
+                                    <div className="space-y-4 text-[12px]">
                                         <p><strong>Signed (Agent):</strong> {tenancyInfo.clerkName || '_________________________'}</p>
                                         <p><strong>Date:</strong> {formatOrdinalDate(tenancyInfo.dateOfInventory) || '_________________________'}</p>
                                     </div>
@@ -676,7 +676,7 @@ Condition: [Condition]
 
                                 {mainImages.length > 0 && (
                                     <div className="html2pdf__page-break w-full mt-10 pt-8 border-t-2 border-gray-200" style={{ fontSize: 0 }}>
-                                        <h3 className="text-[16px] font-bold mb-6">Photographic Evidence</h3>
+                                        <h3 className="text-[14px] font-bold mb-6" style={{ fontSize: '14px' }}>Photographic Evidence</h3>
                                         <div className="block w-full">
                                             {mainImages.map((img, idx) => (
                                                 <div 
@@ -685,11 +685,11 @@ Condition: [Condition]
                                                     style={{ 
                                                         width: '31%', 
                                                         marginRight: idx % 3 === 2 ? '0' : '3.5%', 
-                                                        fontSize: '13px',
+                                                        fontSize: '12px',
                                                         pageBreakInside: 'avoid' 
                                                     }}
                                                 >
-                                                    <p className="text-[11px] font-bold mb-1 text-gray-500 uppercase tracking-wider">Image {idx + 1}</p>
+                                                    <p className="text-[10px] font-bold mb-1 text-gray-500 uppercase tracking-wider">Image {idx + 1}</p>
                                                     <img
                                                         src={`data:${img.mimeType};base64,${img.data}`}
                                                         className="w-full h-40 object-cover rounded shadow-sm border border-gray-300"
