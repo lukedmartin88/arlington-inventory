@@ -59,6 +59,9 @@ export default function App() {
     const [isProcessing, setIsProcessing] = useState(false);
     const [errorMsg, setErrorMsg] = useState('');
     const [pdfFallbackMsg, setPdfFallbackMsg] = useState('');
+    
+    // FIX: Pre-load the logo as a Base64 string so the PDF engine NEVER misses it
+    const [logoSrc, setLogoSrc] = useState("https://i.ibb.co/N6Z7PwWc/Arlington-large-20251119-124957-0000.jpg");
 
     const progressIntervalRef = useRef(null);
 
@@ -70,17 +73,7 @@ export default function App() {
         };
     }, []);
 
-    const handleTenancyChange = (e) => {
-        const { name, value } = e.target;
-        setTenancyInfo(prev => ({ ...prev, [name]: value }));
-    };
-
-    const handleApiChange = (e) => {
-        const newKey = e.target.value;
-        setActiveApiKey(newKey);
-        localStorage.setItem('arlington_gemini_api_key', newKey);
-    };
-
+    // Load PDF engine script
     useEffect(() => {
         if (!document.getElementById('html2pdf-script')) {
             const script = document.createElement("script");
@@ -93,6 +86,31 @@ export default function App() {
             document.body.appendChild(script);
         }
     }, []);
+
+    // Pre-load logo to guarantee PDF rendering
+    useEffect(() => {
+        const img = new Image();
+        img.crossOrigin = "Anonymous";
+        img.onload = () => {
+            const canvas = document.createElement("canvas");
+            canvas.width = img.width;
+            canvas.height = img.height;
+            canvas.getContext("2d").drawImage(img, 0, 0);
+            setLogoSrc(canvas.toDataURL("image/jpeg"));
+        };
+        img.src = "https://i.ibb.co/N6Z7PwWc/Arlington-large-20251119-124957-0000.jpg";
+    }, []);
+
+    const handleTenancyChange = (e) => {
+        const { name, value } = e.target;
+        setTenancyInfo(prev => ({ ...prev, [name]: value }));
+    };
+
+    const handleApiChange = (e) => {
+        const newKey = e.target.value;
+        setActiveApiKey(newKey);
+        localStorage.setItem('arlington_gemini_api_key', newKey);
+    };
 
     const handleDownloadPDF = () => {
         const sourceElement = document.getElementById('printable-report');
@@ -145,7 +163,8 @@ export default function App() {
                         scale: 2,
                         useCORS: true,
                         letterRendering: true,
-                        logging: false
+                        logging: false,
+                        imageTimeout: 15000 // Force engine to wait for any straggling images
                     },
                     jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
                     pagebreak: { mode: ['css', 'legacy'], avoid: ['.break-inside-avoid'] }
@@ -333,7 +352,7 @@ Condition: [Condition]
                 segments.push(<span key={`t-${lastIndex}`}>{line.slice(lastIndex)}</span>);
             }
             return (
-                <p key={i} className={`text-[12pt] text-gray-800 ${line.trim() === '' ? 'h-2' : 'mt-1'}`}>
+                <p key={i} className={`text-[12pt] text-gray-800 leading-[1.6] ${line.trim() === '' ? 'h-2' : 'mt-1.5'}`}>
                     {segments.length > 0 ? segments : line}
                 </p>
             );
@@ -382,7 +401,7 @@ Condition: [Condition]
 
                 <div className="bg-[#2f314b] text-white p-4 sm:p-6 print:hidden flex items-center gap-4">
                     <img 
-                        src="https://i.ibb.co/N6Z7PwWc/Arlington-large-20251119-124957-0000.jpg" 
+                        src={logoSrc} 
                         alt="Arlington Park Logo" 
                         crossOrigin="anonymous" 
                         className="h-10 sm:h-12 object-contain" 
@@ -612,7 +631,7 @@ Condition: [Condition]
 
                                 <div className="mb-8 text-center flex flex-col items-center">
                                     <img 
-                                        src="https://i.ibb.co/N6Z7PwWc/Arlington-large-20251119-124957-0000.jpg" 
+                                        src={logoSrc} 
                                         alt="Arlington Park" 
                                         crossOrigin="anonymous" 
                                         style={{ height: '72px' }}
@@ -649,13 +668,23 @@ Condition: [Condition]
                                     </div>
                                 </div>
 
+                                {/* Photographic Appendix Section - FIX: Swapped to inline-block for perfect PDF page breaks */}
                                 {mainImages.length > 0 && (
-                                    <div className="html2pdf__page-break w-full mt-10 pt-8 border-t-2 border-gray-200">
-                                        <h3 className="text-[14pt] font-bold mb-6">Photographic Evidence</h3>
-                                        <div className="grid grid-cols-3 gap-4">
+                                    <div className="html2pdf__page-break w-full mt-10 pt-8 border-t-2 border-gray-200" style={{ fontSize: 0 }}>
+                                        <h3 className="text-[14pt] font-bold mb-6" style={{ fontSize: '14pt' }}>Photographic Evidence</h3>
+                                        <div className="block w-full">
                                             {mainImages.map((img, idx) => (
-                                                <div key={idx} className="break-inside-avoid mb-4">
-                                                    <p className="text-xs font-bold mb-1 text-gray-500 uppercase tracking-wider">Image {idx + 1}</p>
+                                                <div 
+                                                    key={idx} 
+                                                    className="break-inside-avoid inline-block align-top mb-6" 
+                                                    style={{ 
+                                                        width: '31%', 
+                                                        marginRight: idx % 3 === 2 ? '0' : '3.5%', 
+                                                        fontSize: '12pt',
+                                                        pageBreakInside: 'avoid' 
+                                                    }}
+                                                >
+                                                    <p className="text-[10pt] font-bold mb-1 text-gray-500 uppercase tracking-wider">Image {idx + 1}</p>
                                                     <img
                                                         src={`data:${img.mimeType};base64,${img.data}`}
                                                         className="w-full h-40 object-cover rounded shadow-sm border border-gray-300"
