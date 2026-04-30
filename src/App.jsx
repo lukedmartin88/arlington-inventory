@@ -14,7 +14,6 @@ const getEnvKey = () => {
 
 const callGeminiWithFallback = async (payload, activeApiKey) => {
     let lastError = null;
-    // RESTORED: 'gemini-2.5-flash-preview-09-2025' is strictly required for the Canvas preview environment to function.
     const defaultModels = [
         'gemini-2.5-flash-preview-09-2025',
         'gemini-2.5-flash',
@@ -334,7 +333,7 @@ Condition: [Condition]
                 segments.push(<span key={`t-${lastIndex}`}>{line.slice(lastIndex)}</span>);
             }
             return (
-                <p key={i} className={`text-[15px] text-gray-800 ${line.trim() === '' ? 'h-3' : 'mt-1.5'}`}>
+                <p key={i} className={`text-[12pt] text-gray-800 ${line.trim() === '' ? 'h-2' : 'mt-1'}`}>
                     {segments.length > 0 ? segments : line}
                 </p>
             );
@@ -383,7 +382,7 @@ Condition: [Condition]
 
                 <div className="bg-[#2f314b] text-white p-4 sm:p-6 print:hidden flex items-center gap-4">
                     <img 
-                        src="https://www.arlingtonpark.co.uk/images/arlington-park-site-logo.png.pagespeed.ce.BJSqnaww-K.png" 
+                        src="https://i.ibb.co/N6Z7PwWc/Arlington-large-20251119-124957-0000.jpg" 
                         alt="Arlington Park Logo" 
                         crossOrigin="anonymous" 
                         className="h-10 sm:h-12 object-contain" 
@@ -611,18 +610,18 @@ Condition: [Condition]
                             {/* PRINTABLE PDF AREA */}
                             <div className="bg-white p-10 print:p-0 max-w-[210mm] mx-auto shadow-sm text-gray-900" id="printable-report" style={{ fontFamily: "Arial, sans-serif" }}>
 
-                                <div className="mb-10 text-center flex flex-col items-center">
+                                <div className="mb-8 text-center flex flex-col items-center">
                                     <img 
-                                        src="https://www.arlingtonpark.co.uk/images/arlington-park-site-logo.png.pagespeed.ce.BJSqnaww-K.png" 
+                                        src="https://i.ibb.co/N6Z7PwWc/Arlington-large-20251119-124957-0000.jpg" 
                                         alt="Arlington Park" 
                                         crossOrigin="anonymous" 
                                         style={{ height: '72px' }}
-                                        className="mb-6 object-contain" 
+                                        className="mb-4 object-contain" 
                                     />
-                                    <h2 className="text-[22px] font-bold">Property Inventory & Schedule of Condition</h2>
+                                    <h2 className="text-[16pt] font-bold">Property Inventory & Schedule of Condition</h2>
                                 </div>
 
-                                <div className="grid grid-cols-1 gap-3 mb-10 text-[15px]">
+                                <div className="grid grid-cols-1 gap-2 mb-8 text-[12pt]">
                                     <div className="flex">
                                         <span className="w-48 font-bold">Property Address:</span> 
                                         <span>
@@ -637,22 +636,22 @@ Condition: [Condition]
                                     <div className="flex"><span className="w-48 font-bold">Inspected By:</span> <span>{tenancyInfo.clerkName || ''}</span></div>
                                 </div>
 
-                                <div className="prose max-w-none mb-12">
+                                <div className="prose max-w-none mb-10">
                                     {renderReportText(mainReport)}
                                 </div>
 
                                 <div className="mt-8 break-inside-avoid">
-                                    <h3 className="text-lg font-bold mb-4">Declaration</h3>
-                                    <p className="text-[15px] mb-8">This report is a fair and accurate representation of the property at the time of inspection.</p>
-                                    <div className="space-y-4 text-[15px]">
+                                    <h3 className="text-[14pt] font-bold mb-4">Declaration</h3>
+                                    <p className="text-[12pt] mb-6">This report is a fair and accurate representation of the property at the time of inspection.</p>
+                                    <div className="space-y-4 text-[12pt]">
                                         <p><strong>Signed (Agent):</strong> {tenancyInfo.clerkName || '_________________________'}</p>
                                         <p><strong>Date:</strong> {formatOrdinalDate(tenancyInfo.dateOfInventory) || '_________________________'}</p>
                                     </div>
                                 </div>
 
                                 {mainImages.length > 0 && (
-                                    <div className="html2pdf__page-break w-full mt-12 pt-10 border-t-2 border-gray-200">
-                                        <h3 className="text-lg font-bold mb-6">Photographic Evidence</h3>
+                                    <div className="html2pdf__page-break w-full mt-10 pt-8 border-t-2 border-gray-200">
+                                        <h3 className="text-[14pt] font-bold mb-6">Photographic Evidence</h3>
                                         <div className="grid grid-cols-3 gap-4">
                                             {mainImages.map((img, idx) => (
                                                 <div key={idx} className="break-inside-avoid mb-4">
