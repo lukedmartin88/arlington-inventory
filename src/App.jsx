@@ -382,7 +382,12 @@ Condition: [Condition]
             <div className="max-w-4xl mx-auto bg-white rounded-xl shadow-lg overflow-hidden print:shadow-none">
 
                 <div className="bg-[#2f314b] text-white p-4 sm:p-6 print:hidden flex items-center gap-4">
-                    <img src="https://www.arlingtonpark.co.uk/images/arlington-park-site-logo.png.pagespeed.ce.BJSqnaww-K.png" alt="Arlington Park Logo" className="h-10 sm:h-12 object-contain" />
+                    <img 
+                        src="https://www.arlingtonpark.co.uk/images/arlington-park-site-logo.png.pagespeed.ce.BJSqnaww-K.png" 
+                        alt="Arlington Park Logo" 
+                        crossOrigin="anonymous" 
+                        className="h-10 sm:h-12 object-contain" 
+                    />
                     <h1 className="text-xl sm:text-2xl font-bold">Arlington Park Inventory</h1>
                 </div>
 
@@ -607,7 +612,13 @@ Condition: [Condition]
                             <div className="bg-white p-10 print:p-0 max-w-[210mm] mx-auto shadow-sm text-gray-900" id="printable-report" style={{ fontFamily: "Arial, sans-serif" }}>
 
                                 <div className="mb-10 text-center flex flex-col items-center">
-                                    <img src="https://www.arlingtonpark.co.uk/images/arlington-park-site-logo.png.pagespeed.ce.BJSqnaww-K.png" alt="Arlington Park" className="h-[4.5rem] mb-6 object-contain" />
+                                    <img 
+                                        src="https://www.arlingtonpark.co.uk/images/arlington-park-site-logo.png.pagespeed.ce.BJSqnaww-K.png" 
+                                        alt="Arlington Park" 
+                                        crossOrigin="anonymous" 
+                                        style={{ height: '72px' }}
+                                        className="mb-6 object-contain" 
+                                    />
                                     <h2 className="text-[22px] font-bold">Property Inventory & Schedule of Condition</h2>
                                 </div>
 
@@ -642,13 +653,13 @@ Condition: [Condition]
                                 {mainImages.length > 0 && (
                                     <div className="html2pdf__page-break w-full mt-12 pt-10 border-t-2 border-gray-200">
                                         <h3 className="text-lg font-bold mb-6">Photographic Evidence</h3>
-                                        <div className="grid grid-cols-2 gap-4">
+                                        <div className="grid grid-cols-3 gap-4">
                                             {mainImages.map((img, idx) => (
-                                                <div key={idx} className="break-inside-avoid mb-2">
+                                                <div key={idx} className="break-inside-avoid mb-4">
                                                     <p className="text-xs font-bold mb-1 text-gray-500 uppercase tracking-wider">Image {idx + 1}</p>
                                                     <img
                                                         src={`data:${img.mimeType};base64,${img.data}`}
-                                                        className="w-full h-auto object-cover rounded shadow-sm border border-gray-300"
+                                                        className="w-full h-40 object-cover rounded shadow-sm border border-gray-300"
                                                         alt={`Evidence ${idx + 1}`}
                                                     />
                                                 </div>
