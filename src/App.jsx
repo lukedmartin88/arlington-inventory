@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 
 // --- API Configuration ---
 const getEnvKey = () => {
@@ -44,6 +44,32 @@ const callGeminiWithFallback = async (payload, activeApiKey) => {
     throw lastError;
 };
 
+// Stable ordinal date formatter
+const getOrdinalSuffix = (day) => {
+    if (day === 1 || day === 21 || day === 31) return 'st';
+    if (day === 2 || day === 22) return 'nd';
+    if (day === 3 || day === 23) return 'rd';
+    return 'th';
+};
+
+const formatOrdinalDate = (dateString) => {
+    if (!dateString) return '';
+    const parts = dateString.split('-').map(Number);
+    if (parts.length !== 3 || parts.some(isNaN)) return dateString;
+    const date = new Date(parts[0], parts[1] - 1, parts[2]);
+    if (isNaN(date.getTime())) return dateString;
+    const day = date.getDate();
+    const month = date.toLocaleDateString('en-GB', { month: 'long' });
+    const year = date.getFullYear();
+    return `${day}${getOrdinalSuffix(day)} ${month} ${year}`;
+};
+
+const LOGO_URL = "https://i.ibb.co/N6Z7PwWc/Arlington-large-20251119-124957-0000.jpg";
+
+// Stable ID generator for images
+let _imgIdCounter = 0;
+const newImgId = () => `img-${++_imgIdCounter}`;
+
 export default function App() {
     const [step, setStep] = useState(1);
     const [showApiSettings, setShowApiSettings] = useState(false);
@@ -51,7 +77,7 @@ export default function App() {
     const [tenancyInfo, setTenancyInfo] = useState({
         propertyAddress: '', roomIdentifier: '', tenantName: '', moveInDate: '', dateOfInventory: '', clerkName: ''
     });
-    const [mainImages, setMainImages] = useState([]);
+    const [mainImages, setMainImages] = useState([]);   // [{ id, mimeType, data }]
     const [mainReport, setMainReport] = useState('');
     const [isAnalysingMain, setIsAnalysingMain] = useState(false);
     const [isPolishingMain, setIsPolishingMain] = useState(false);
@@ -59,47 +85,55 @@ export default function App() {
     const [isProcessing, setIsProcessing] = useState(false);
     const [errorMsg, setErrorMsg] = useState('');
     const [pdfFallbackMsg, setPdfFallbackMsg] = useState('');
-    
-    // FIX: Pre-load the logo as a Base64 string so the PDF engine NEVER misses it
-    const [logoSrc, setLogoSrc] = useState("https://i.ibb.co/N6Z7PwWc/Arlington-large-20251119-124957-0000.jpg");
+    const [logoSrc, setLogoSrc] = useState(LOGO_URL);
 
     const progressIntervalRef = useRef(null);
 
+    // Cleanup interval on unmount
     useEffect(() => {
         return () => {
-            if (progressIntervalRef.current) {
-                clearInterval(progressIntervalRef.current);
-            }
+            if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
         };
     }, []);
 
-    // Load PDF engine script
+    // Load PDF engine
     useEffect(() => {
         if (!document.getElementById('html2pdf-script')) {
             const script = document.createElement("script");
             script.id = 'html2pdf-script';
             script.src = "https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js";
             script.async = true;
-            script.onerror = () => {
-                setPdfFallbackMsg("PDF library failed to load. Download will use native print.");
-            };
+            script.onerror = () => setPdfFallbackMsg("PDF library failed to load. Download will use native print.");
             document.body.appendChild(script);
         }
     }, []);
 
-    // Pre-load logo to guarantee PDF rendering
+    // Pre-load logo as Base64 with graceful fallback
     useEffect(() => {
         const img = new Image();
         img.crossOrigin = "Anonymous";
         img.onload = () => {
-            const canvas = document.createElement("canvas");
-            canvas.width = img.width;
-            canvas.height = img.height;
-            canvas.getContext("2d").drawImage(img, 0, 0);
-            setLogoSrc(canvas.toDataURL("image/jpeg"));
+            try {
+                const canvas = document.createElement("canvas");
+                canvas.width = img.width;
+                canvas.height = img.height;
+                canvas.getContext("2d").drawImage(img, 0, 0);
+                setLogoSrc(canvas.toDataURL("image/jpeg"));
+            } catch (e) {
+                console.warn("Logo canvas conversion blocked by CORS; using URL fallback.", e);
+            }
         };
-        img.src = "https://i.ibb.co/N6Z7PwWc/Arlington-large-20251119-124957-0000.jpg";
+        img.onerror = () => console.warn("Logo failed to load from remote URL.");
+        img.src = LOGO_URL;
     }, []);
+
+    // Close API settings modal on Escape key
+    useEffect(() => {
+        if (!showApiSettings) return;
+        const handleKey = (e) => { if (e.key === 'Escape') setShowApiSettings(false); };
+        window.addEventListener('keydown', handleKey);
+        return () => window.removeEventListener('keydown', handleKey);
+    }, [showApiSettings]);
 
     const handleTenancyChange = (e) => {
         const { name, value } = e.target;
@@ -109,7 +143,11 @@ export default function App() {
     const handleApiChange = (e) => {
         const newKey = e.target.value;
         setActiveApiKey(newKey);
-        localStorage.setItem('arlington_gemini_api_key', newKey);
+        try {
+            localStorage.setItem('arlington_gemini_api_key', newKey);
+        } catch (e) {
+            console.warn("Could not save API key to localStorage:", e);
+        }
     };
 
     const handleDownloadPDF = () => {
@@ -120,24 +158,40 @@ export default function App() {
         setErrorMsg('');
         setPdfFallbackMsg('');
 
+        let isCompleted = false;
+        let sandboxRef = null;
+
+        const safetyUnlock = setTimeout(() => {
+            if (!isCompleted) {
+                isCompleted = true;
+                setIsProcessing(false);
+                setErrorMsg("PDF engine stalled. Falling back to native print.");
+                if (sandboxRef && document.body.contains(sandboxRef)) {
+                    document.body.removeChild(sandboxRef);
+                }
+                window.print();
+            }
+        }, 15000);
+
         const run = async () => {
             try {
                 await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 
                 if (!window.html2pdf) {
+                    isCompleted = true;
+                    clearTimeout(safetyUnlock);
                     setPdfFallbackMsg("PDF library not loaded, using native print instead.");
                     window.print();
                     return;
                 }
 
-                const sandbox = document.createElement('div');
-                sandbox.style.position = 'fixed';
-                sandbox.style.left = '-9999px';
-                sandbox.style.top = '0';
-                sandbox.style.width = '210mm';
+                sandboxRef = document.createElement('div');
+                sandboxRef.style.position = 'fixed';
+                sandboxRef.style.left = '-9999px';
+                sandboxRef.style.top = '0';
+                sandboxRef.style.width = '210mm';
 
                 const clone = sourceElement.cloneNode(true);
-
                 clone.style.setProperty('--color-gray-900', '#111827');
                 clone.style.setProperty('--color-gray-800', '#1f2937');
                 clone.style.setProperty('--color-gray-700', '#374151');
@@ -146,43 +200,43 @@ export default function App() {
                 clone.style.setProperty('--color-white', '#ffffff');
                 clone.style.color = '#111827';
 
-                sandbox.appendChild(clone);
-                document.body.appendChild(sandbox);
+                sandboxRef.appendChild(clone);
+                document.body.appendChild(sandboxRef);
 
-                const tName = tenancyInfo.tenantName ? tenancyInfo.tenantName.trim() : 'Tenant';
-                const rNum = tenancyInfo.roomIdentifier ? tenancyInfo.roomIdentifier.trim() : 'Room';
+                const tName = tenancyInfo.tenantName?.trim() || 'Tenant';
+                const rNum = tenancyInfo.roomIdentifier?.trim() || 'Room';
                 const mDate = tenancyInfo.moveInDate || 'NoDate';
-                const rawFilename = `${tName} ${rNum} ${mDate}`;
-                const safeFilename = rawFilename.replace(/[/\\?%*:|"<>]/g, '-').trim() + '.pdf';
+                const safeFilename = `${tName} ${rNum} ${mDate}`.replace(/[/\\?%*:|"<>]/g, '-').trim() + '.pdf';
 
                 const opt = {
                     margin: 10,
                     filename: safeFilename,
                     image: { type: 'jpeg', quality: 0.98 },
-                    html2canvas: {
-                        scale: 2,
-                        useCORS: true,
-                        letterRendering: true,
-                        logging: false,
-                        imageTimeout: 15000 // Force engine to wait for any straggling images
-                    },
+                    html2canvas: { scale: 2, useCORS: true, letterRendering: true, logging: false, imageTimeout: 8000 },
                     jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
                     pagebreak: { mode: ['css', 'legacy'], avoid: ['.break-inside-avoid'] }
                 };
 
-                try {
-                    await window.html2pdf().set(opt).from(clone).save();
-                } catch (err) {
-                    console.error("PDF generation failed:", err);
-                    setErrorMsg("PDF generation failed. Falling back to native print.");
-                    window.print();
-                } finally {
-                    if (document.body.contains(sandbox)) {
-                        document.body.removeChild(sandbox);
+                await window.html2pdf().set(opt).from(clone).save();
+
+                if (!isCompleted) {
+                    isCompleted = true;
+                    clearTimeout(safetyUnlock);
+                    setIsProcessing(false);
+                    if (sandboxRef && document.body.contains(sandboxRef)) {
+                        document.body.removeChild(sandboxRef);
                     }
                 }
-            } finally {
-                setIsProcessing(false);
+            } catch (err) {
+                if (!isCompleted) {
+                    isCompleted = true;
+                    clearTimeout(safetyUnlock);
+                    setIsProcessing(false);
+                    console.error("PDF generation failed:", err);
+                    setErrorMsg("PDF generation failed. Falling back to native print.");
+                    if (sandboxRef && document.body.contains(sandboxRef)) document.body.removeChild(sandboxRef);
+                    window.print();
+                }
             }
         };
 
@@ -192,25 +246,19 @@ export default function App() {
     const compressImage = (file) => {
         return new Promise((resolve) => {
             const reader = new FileReader();
-            reader.onerror = () => {
-                console.warn("Failed to read file:", file.name);
-                resolve(null);
-            };
+            reader.onerror = () => resolve({ failed: true, name: file.name });
             reader.readAsDataURL(file);
             reader.onload = (event) => {
                 const img = new Image();
                 img.src = event.target.result;
-                img.onerror = () => {
-                    console.warn("Failed to decode image:", file.name);
-                    resolve(null);
-                };
+                img.onerror = () => resolve({ failed: true, name: file.name });
                 img.onload = () => {
                     const canvas = document.createElement('canvas');
                     const scale = Math.min(1, 1200 / Math.max(img.width, img.height));
                     canvas.width = img.width * scale;
                     canvas.height = img.height * scale;
                     canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-                    resolve({ mimeType: 'image/jpeg', data: canvas.toDataURL('image/jpeg', 0.8).split(',')[1] });
+                    resolve({ id: newImgId(), mimeType: 'image/jpeg', data: canvas.toDataURL('image/jpeg', 0.8).split(',')[1] });
                 };
             };
         });
@@ -220,19 +268,23 @@ export default function App() {
         const files = Array.from(e.target.files);
         if (files.length === 0) return;
 
-        const compressedFiles = (await Promise.all(files.map(file => compressImage(file)))).filter(Boolean);
+        const results = await Promise.all(files.map(file => compressImage(file)));
+        const failed = results.filter(r => r.failed);
+        const successful = results.filter(r => !r.failed);
 
-        if (compressedFiles.length < files.length) {
-            setErrorMsg(`${files.length - compressedFiles.length} file(s) could not be read and were skipped.`);
+        if (failed.length > 0) {
+            setErrorMsg(`The following file(s) could not be read and were skipped: ${failed.map(f => f.name).join(', ')}`);
+        } else {
+            setErrorMsg('');
         }
 
-        setMainImages(prev => [...prev, ...compressedFiles]);
+        setMainImages(prev => [...prev, ...successful]);
         e.target.value = '';
     };
 
-    const handleRemoveImage = (indexToRemove) => {
-        setMainImages(prev => prev.filter((_, i) => i !== indexToRemove));
-    };
+    const handleRemoveImage = useCallback((idToRemove) => {
+        setMainImages(prev => prev.filter(img => img.id !== idToRemove));
+    }, []);
 
     const analyseImages = async () => {
         if (!activeApiKey) {
@@ -251,9 +303,8 @@ export default function App() {
         progressIntervalRef.current = setInterval(() => {
             setLoadingState(prev => {
                 if (!prev.active) return prev;
-                let newProgress = prev.progress + (Math.random() * 8 + 2);
-                if (newProgress > 95) newProgress = 95;
-                let newText = prev.text;
+                let newProgress = Math.min(95, prev.progress + Math.random() * 8 + 2);
+                let newText = 'Preparing images...';
                 if (newProgress > 25) newText = 'Uploading securely...';
                 if (newProgress > 50) newText = 'AI is inspecting the images...';
                 if (newProgress > 80) newText = 'Formatting detailed report...';
@@ -265,7 +316,7 @@ export default function App() {
             const imageParts = mainImages.map(img => ({
                 inlineData: { mimeType: img.mimeType, data: img.data }
             }));
-            const roomName = tenancyInfo.roomIdentifier || 'tenant room';
+            const roomName = (tenancyInfo.roomIdentifier || 'tenant room').replace(/[<>"'`]/g, '').slice(0, 100);
 
             const formatConstraint = `
 Output the report EXACTLY in this format using bolding for headings. 
@@ -289,19 +340,19 @@ Condition: [Condition]
             };
 
             const data = await callGeminiWithFallback(payload, activeApiKey);
-
-            clearInterval(progressIntervalRef.current);
-            setLoadingState(prev => ({ ...prev, progress: 100, text: 'Complete!' }));
             const aiDescription = data.candidates?.[0]?.content?.parts?.[0]?.text || "Analysis failed to return text.";
             setMainReport(aiDescription);
 
+            setLoadingState(prev => ({ ...prev, progress: 100, text: 'Complete!' }));
             setTimeout(() => setLoadingState({ active: false, progress: 0, text: '' }), 1500);
+
         } catch (error) {
             console.error("API Error:", error);
-            clearInterval(progressIntervalRef.current);
-            setLoadingState({ active: false, progress: 0, text: '' });
             setErrorMsg(`Analysis failed: ${error.message}`);
+            setLoadingState({ active: false, progress: 0, text: '' });
         } finally {
+            clearInterval(progressIntervalRef.current);
+            progressIntervalRef.current = null;
             setIsAnalysingMain(false);
         }
     };
@@ -321,19 +372,7 @@ Condition: [Condition]
         }
     };
 
-    const formatOrdinalDate = (dateString) => {
-        if (!dateString) return '';
-        const parts = dateString.split('-').map(Number);
-        if (parts.length !== 3 || parts.some(isNaN)) return dateString;
-        const date = new Date(parts[0], parts[1] - 1, parts[2]);
-        if (isNaN(date.getTime())) return dateString;
-        const day = date.getDate();
-        const month = date.toLocaleDateString('en-GB', { month: 'long' });
-        const year = date.getFullYear();
-        const s = ["th", "st", "nd", "rd"], v = day % 100;
-        return `${day}${s[(v - 20) % 10] || s[v] || s[0]} ${month} ${year}`;
-    };
-
+    // FIXED TYPOGRAPHY: Switch entirely to rigid pixel values to prevent inflation during PDF render
     const renderReportText = (text) => {
         if (!text) return null;
         return text.split('\n').map((line, i) => {
@@ -352,20 +391,24 @@ Condition: [Condition]
                 segments.push(<span key={`t-${lastIndex}`}>{line.slice(lastIndex)}</span>);
             }
             return (
-                <p key={i} className={`text-[12pt] text-gray-800 leading-[1.6] ${line.trim() === '' ? 'h-2' : 'mt-1.5'}`}>
+                <p key={i} className={`text-[13px] text-gray-800 leading-[1.6] ${line.trim() === '' ? 'h-2' : 'mt-1.5'}`}>
                     {segments.length > 0 ? segments : line}
                 </p>
             );
         });
     };
 
-    const canProceedToStep2 = tenancyInfo.propertyAddress.trim() !== '' || tenancyInfo.tenantName.trim() !== '';
+    const canProceedToStep2 = tenancyInfo.propertyAddress.trim() !== '' && tenancyInfo.tenantName.trim() !== '';
     const canProceedToStep3 = mainReport.trim() !== '';
 
     const handleStepClick = (targetStep) => {
-        if (targetStep === 2 && !canProceedToStep2 && step < 2) return;
-        if (targetStep === 3 && !canProceedToStep3 && step < 3) return;
-        setStep(targetStep);
+        if (targetStep <= step) { setStep(targetStep); return; }
+        if (targetStep === 2 && canProceedToStep2) { setStep(2); return; }
+        if (targetStep === 3 && canProceedToStep3) { setStep(3); return; }
+    };
+
+    const handleModalBackdropClick = (e) => {
+        if (e.target === e.currentTarget) setShowApiSettings(false);
     };
 
     return (
@@ -376,13 +419,8 @@ Condition: [Condition]
                     body * { visibility: hidden; }
                     #printable-report, #printable-report * { visibility: visible; }
                     #printable-report { 
-                        position: absolute; 
-                        left: 0; 
-                        top: 0; 
-                        width: 100%; 
-                        padding: 0; 
-                        margin: 0; 
-                        box-shadow: none;
+                        position: absolute; left: 0; top: 0; width: 100%; 
+                        padding: 0; margin: 0; box-shadow: none;
                     }
                     .html2pdf__page-break { page-break-before: always; }
                 }
@@ -400,39 +438,29 @@ Condition: [Condition]
             <div className="max-w-4xl mx-auto bg-white rounded-xl shadow-lg overflow-hidden print:shadow-none">
 
                 <div className="bg-[#2f314b] text-white p-4 sm:p-6 print:hidden flex items-center gap-4">
-                    <img 
-                        src={logoSrc} 
-                        alt="Arlington Park Logo" 
-                        crossOrigin="anonymous" 
-                        className="h-10 sm:h-12 object-contain" 
-                    />
+                    <img src={logoSrc} alt="Arlington Park Logo" crossOrigin="anonymous" className="h-10 sm:h-12 object-contain" />
                     <h1 className="text-xl sm:text-2xl font-bold">Arlington Park Inventory</h1>
                 </div>
 
                 <div className="flex border-b border-gray-200 print:hidden">
-                    <button
-                        onClick={() => handleStepClick(1)}
-                        className={`flex-1 py-4 text-center font-medium transition ${step === 1 ? 'border-b-2 border-[#2f314b] text-[#2f314b]' : 'text-gray-500 hover:bg-gray-50'}`}
-                    >
-                        1. Details
-                    </button>
-                    <button
-                        onClick={() => handleStepClick(2)}
-                        disabled={!canProceedToStep2 && step < 2}
-                        className={`flex-1 py-4 text-center font-medium transition ${step === 2 ? 'border-b-2 border-[#2f314b] text-[#2f314b]' : 'text-gray-500 hover:bg-gray-50'} disabled:opacity-40 disabled:cursor-not-allowed`}
-                    >
-                        2. Analysis
-                    </button>
-                    <button
-                        onClick={() => handleStepClick(3)}
-                        disabled={!canProceedToStep3 && step < 3}
-                        className={`flex-1 py-4 text-center font-medium transition ${step === 3 ? 'border-b-2 border-[#2f314b] text-[#2f314b]' : 'text-gray-500 hover:bg-gray-50'} disabled:opacity-40 disabled:cursor-not-allowed`}
-                    >
-                        3. Review
-                    </button>
+                    {[1, 2, 3].map(s => (
+                        <button
+                            key={s}
+                            onClick={() => handleStepClick(s)}
+                            disabled={
+                                (s === 2 && !canProceedToStep2 && step < 2) ||
+                                (s === 3 && !canProceedToStep3 && step < 3)
+                            }
+                            className={`flex-1 py-4 text-center font-medium transition ${step === s ? 'border-b-2 border-[#2f314b] text-[#2f314b]' : 'text-gray-500 hover:bg-gray-50'} disabled:opacity-40 disabled:cursor-not-allowed`}
+                        >
+                            {s === 1 ? '1. Details' : s === 2 ? '2. Analysis' : '3. Review'}
+                        </button>
+                    ))}
                 </div>
 
                 <div className="p-6 sm:p-8">
+
+                    {/* ── STEP 1 ── */}
                     {step === 1 && (
                         <div className="space-y-6">
                             <h2 className="text-xl font-semibold text-gray-800 mb-4">Tenancy Information</h2>
@@ -474,33 +502,15 @@ Condition: [Condition]
                                 <div className="space-y-6">
                                     <div>
                                         <label className="block text-sm font-medium text-gray-700 mb-1">Move-in Date</label>
-                                        <input
-                                            type="date"
-                                            name="moveInDate"
-                                            value={tenancyInfo.moveInDate}
-                                            onChange={handleTenancyChange}
-                                            className="w-full p-2 border border-gray-300 rounded-md focus:ring-[#2f314b] focus:border-[#2f314b]"
-                                        />
+                                        <input type="date" name="moveInDate" value={tenancyInfo.moveInDate} onChange={handleTenancyChange} className="w-full p-2 border border-gray-300 rounded-md focus:ring-[#2f314b] focus:border-[#2f314b]" />
                                     </div>
                                     <div>
                                         <label className="block text-sm font-medium text-gray-700 mb-1">Inspection Date</label>
-                                        <input
-                                            type="date"
-                                            name="dateOfInventory"
-                                            value={tenancyInfo.dateOfInventory}
-                                            onChange={handleTenancyChange}
-                                            className="w-full p-2 border border-gray-300 rounded-md focus:ring-[#2f314b] focus:border-[#2f314b]"
-                                        />
+                                        <input type="date" name="dateOfInventory" value={tenancyInfo.dateOfInventory} onChange={handleTenancyChange} className="w-full p-2 border border-gray-300 rounded-md focus:ring-[#2f314b] focus:border-[#2f314b]" />
                                     </div>
                                     <div>
                                         <label className="block text-sm font-medium text-gray-700 mb-1">Inspected By (Agent Name)</label>
-                                        <input
-                                            type="text"
-                                            name="clerkName"
-                                            value={tenancyInfo.clerkName}
-                                            onChange={handleTenancyChange}
-                                            className="w-full p-2 border border-gray-300 rounded-md focus:ring-[#2f314b] focus:border-[#2f314b]"
-                                        />
+                                        <input type="text" name="clerkName" value={tenancyInfo.clerkName} onChange={handleTenancyChange} className="w-full p-2 border border-gray-300 rounded-md focus:ring-[#2f314b] focus:border-[#2f314b]" />
                                     </div>
                                 </div>
                             </div>
@@ -512,11 +522,12 @@ Condition: [Condition]
                                 Next
                             </button>
                             {!canProceedToStep2 && (
-                                <p className="text-xs text-gray-400 mt-1">Enter at least a property address or tenant name to continue.</p>
+                                <p className="text-xs text-gray-400 mt-1">Enter both a property address and tenant name to continue.</p>
                             )}
                         </div>
                     )}
 
+                    {/* ── STEP 2 ── */}
                     {step === 2 && (
                         <div className="space-y-8">
                             {errorMsg && <div className="p-4 bg-red-50 text-red-700 rounded-md text-sm border border-red-200">{errorMsg}</div>}
@@ -539,7 +550,7 @@ Condition: [Condition]
                                 {mainImages.length > 0 && (
                                     <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 mb-4">
                                         {mainImages.map((img, idx) => (
-                                            <div key={idx} className="relative group rounded overflow-hidden border border-gray-200">
+                                            <div key={img.id} className="relative group rounded overflow-hidden border border-gray-200">
                                                 <img
                                                     src={`data:${img.mimeType};base64,${img.data}`}
                                                     alt={`Upload ${idx + 1}`}
@@ -547,7 +558,7 @@ Condition: [Condition]
                                                 />
                                                 <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition flex items-center justify-center">
                                                     <button
-                                                        onClick={() => handleRemoveImage(idx)}
+                                                        onClick={() => handleRemoveImage(img.id)}
                                                         className="opacity-0 group-hover:opacity-100 transition bg-red-600 text-white text-xs rounded px-2 py-1 font-medium"
                                                         title="Remove image"
                                                     >
@@ -609,6 +620,7 @@ Condition: [Condition]
                         </div>
                     )}
 
+                    {/* ── STEP 3 ── */}
                     {step === 3 && (
                         <div className="space-y-6">
                             {pdfFallbackMsg && (
@@ -630,19 +642,13 @@ Condition: [Condition]
                             <div className="bg-white p-10 print:p-0 max-w-[210mm] mx-auto shadow-sm text-gray-900" id="printable-report" style={{ fontFamily: "Arial, sans-serif" }}>
 
                                 <div className="mb-8 text-center flex flex-col items-center">
-                                    <img 
-                                        src={logoSrc} 
-                                        alt="Arlington Park" 
-                                        crossOrigin="anonymous" 
-                                        style={{ height: '72px' }}
-                                        className="mb-4 object-contain" 
-                                    />
-                                    <h2 className="text-[16pt] font-bold">Property Inventory & Schedule of Condition</h2>
+                                    <img src={logoSrc} alt="Arlington Park" crossOrigin="anonymous" style={{ height: '72px' }} className="mb-4 object-contain" />
+                                    <h2 className="text-[20px] font-bold">Property Inventory & Schedule of Condition</h2>
                                 </div>
 
-                                <div className="grid grid-cols-1 gap-2 mb-8 text-[12pt]">
+                                <div className="grid grid-cols-1 gap-2 mb-8 text-[13px]">
                                     <div className="flex">
-                                        <span className="w-48 font-bold">Property Address:</span> 
+                                        <span className="w-48 font-bold">Property Address:</span>
                                         <span>
                                             {tenancyInfo.roomIdentifier || ''}
                                             {tenancyInfo.roomIdentifier && tenancyInfo.propertyAddress ? ', ' : ''}
@@ -655,36 +661,35 @@ Condition: [Condition]
                                     <div className="flex"><span className="w-48 font-bold">Inspected By:</span> <span>{tenancyInfo.clerkName || ''}</span></div>
                                 </div>
 
-                                <div className="prose max-w-none mb-10">
+                                <div className="mb-10">
                                     {renderReportText(mainReport)}
                                 </div>
 
                                 <div className="mt-8 break-inside-avoid">
-                                    <h3 className="text-[14pt] font-bold mb-4">Declaration</h3>
-                                    <p className="text-[12pt] mb-6">This report is a fair and accurate representation of the property at the time of inspection.</p>
-                                    <div className="space-y-4 text-[12pt]">
+                                    <h3 className="text-[16px] font-bold mb-4">Declaration</h3>
+                                    <p className="text-[13px] mb-6">This report is a fair and accurate representation of the property at the time of inspection.</p>
+                                    <div className="space-y-4 text-[13px]">
                                         <p><strong>Signed (Agent):</strong> {tenancyInfo.clerkName || '_________________________'}</p>
                                         <p><strong>Date:</strong> {formatOrdinalDate(tenancyInfo.dateOfInventory) || '_________________________'}</p>
                                     </div>
                                 </div>
 
-                                {/* Photographic Appendix Section - FIX: Swapped to inline-block for perfect PDF page breaks */}
                                 {mainImages.length > 0 && (
                                     <div className="html2pdf__page-break w-full mt-10 pt-8 border-t-2 border-gray-200" style={{ fontSize: 0 }}>
-                                        <h3 className="text-[14pt] font-bold mb-6" style={{ fontSize: '14pt' }}>Photographic Evidence</h3>
+                                        <h3 className="text-[16px] font-bold mb-6">Photographic Evidence</h3>
                                         <div className="block w-full">
                                             {mainImages.map((img, idx) => (
                                                 <div 
-                                                    key={idx} 
+                                                    key={img.id} 
                                                     className="break-inside-avoid inline-block align-top mb-6" 
                                                     style={{ 
                                                         width: '31%', 
                                                         marginRight: idx % 3 === 2 ? '0' : '3.5%', 
-                                                        fontSize: '12pt',
+                                                        fontSize: '13px',
                                                         pageBreakInside: 'avoid' 
                                                     }}
                                                 >
-                                                    <p className="text-[10pt] font-bold mb-1 text-gray-500 uppercase tracking-wider">Image {idx + 1}</p>
+                                                    <p className="text-[11px] font-bold mb-1 text-gray-500 uppercase tracking-wider">Image {idx + 1}</p>
                                                     <img
                                                         src={`data:${img.mimeType};base64,${img.data}`}
                                                         className="w-full h-40 object-cover rounded shadow-sm border border-gray-300"
@@ -703,7 +708,8 @@ Condition: [Condition]
 
             <footer className="max-w-4xl mx-auto mt-6 text-center print:hidden pb-6">
                 <div className="text-xs text-gray-500 mb-2 px-4 text-balance">
-                    &copy; {new Date().getFullYear()} Luke Martin - Arlington Park Lettings & Estate Agents, 25a Earlham Rd, Norwich NR2 3AD <a href="https://arlingtonpark.co.uk" target="_blank" rel="noopener noreferrer" className="hover:text-gray-700 underline transition">arlingtonpark.co.uk</a>
+                    &copy; {new Date().getFullYear()} Luke Martin - Arlington Park Lettings & Estate Agents, 25a Earlham Rd, Norwich NR2 3AD{' '}
+                    <a href="https://arlingtonpark.co.uk" target="_blank" rel="noopener noreferrer" className="hover:text-gray-700 underline transition">arlingtonpark.co.uk</a>
                 </div>
                 <button onClick={() => setShowApiSettings(true)} className="text-xs text-gray-400 hover:text-gray-600 underline transition">
                     API Settings
@@ -711,7 +717,10 @@ Condition: [Condition]
             </footer>
 
             {showApiSettings && (
-                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 print:hidden p-4">
+                <div
+                    className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 print:hidden p-4"
+                    onClick={handleModalBackdropClick}
+                >
                     <div className="bg-white p-6 rounded-lg shadow-xl max-w-md w-full">
                         <h3 className="text-lg font-bold text-gray-900 mb-4">API Configuration</h3>
                         <input
