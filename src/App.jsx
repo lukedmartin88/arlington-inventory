@@ -75,7 +75,7 @@ export default function App() {
     const [showApiSettings, setShowApiSettings] = useState(false);
     const [activeApiKey, setActiveApiKey] = useState(getEnvKey());
     const [tenancyInfo, setTenancyInfo] = useState({
-        propertyAddress: '', roomIdentifier: '', tenantName: '', moveInDate: '', checkOutDate: '', dateOfInventory: '', clerkName: ''
+        propertyAddress: '', roomIdentifier: '', tenantName: '', moveInDate: '', checkOutDate: '', dateOfInventory: '', clerkName: '', hasEnsuite: false
     });
     const [mainImages, setMainImages] = useState([]);   
     const [mainReport, setMainReport] = useState('');
@@ -136,8 +136,8 @@ export default function App() {
     }, [showApiSettings]);
 
     const handleTenancyChange = (e) => {
-        const { name, value } = e.target;
-        setTenancyInfo(prev => ({ ...prev, [name]: value }));
+        const { name, value, type, checked } = e.target;
+        setTenancyInfo(prev => ({ ...prev, [name]: type === 'checkbox' ? checked : value }));
     };
 
     const handleApiChange = (e) => {
@@ -330,23 +330,34 @@ When describing specific issues or items, refer to the corresponding image using
 • **Decor:** [assessment]
 • **Flooring:** [assessment]
 
-**2. Detailed Item Condition**
-${roomName}
+**2. Detailed Item Condition: ${roomName}**
 • **[Item name]:** [Description] [Image X]
 Condition: [Condition]
 `;
+            let sectionCount = 3;
+
+            // Dynamically add En-suite bathroom section if selected
+            if (tenancyInfo.hasEnsuite) {
+                formatConstraint += `
+**${sectionCount}. Detailed Item Condition: En-suite Bathroom**
+• **[Item name]:** [Description] [Image X]
+Condition: [Condition]
+`;
+                sectionCount++;
+            }
+
             let promptText = "";
 
             if (reportType === 'inventory') {
                 promptText = `Analyse the images of ${roomName} in an HMO. ${formatConstraint} 
-                Distinguish surface stains from structural damage (holes, burns). Be highly thorough in your analysis. Pay extremely close attention to detail: explicitly identify, count, and note multiples of items (e.g., all light fittings, all plug sockets) and explicitly describe any minor defects found, such as cracks in mirrors, marks, or scuffs. DO NOT suggest any improvements, recommendations, repairs, or fixes required under any circumstances; only strictly state the objective current condition. Be professional. Use UK English. Do not use em dashes.`;
+                Distinguish surface stains from structural damage (holes, burns). Be highly thorough in your analysis. Pay extremely close attention to detail: explicitly identify, count, and note multiples of items (e.g., all light fittings, all plug sockets) and explicitly describe any minor defects found, such as cracks in mirrors, marks, or scuffs. DO NOT suggest any improvements, recommendations, repairs, or fixes required under any circumstances; only strictly state the objective current condition. ${tenancyInfo.hasEnsuite ? 'Ensure you explicitly identify and thoroughly note the conditions of the en-suite bathroom.' : ''} Be professional. Use UK English. Do not use em dashes.`;
             } else {
                 formatConstraint += `
-**3. Deposit Deduction Recommendations**
+**${sectionCount}. Deposit Deduction Recommendations**
 • **[Item/Issue]:** [Reasoning for deduction vs fair wear and tear]
 `;
                 promptText = `Analyse the images of ${roomName} in an HMO for an end of tenancy check-out report. ${formatConstraint} 
-                Distinguish surface stains from structural damage (holes, burns). Be highly thorough in your analysis. Pay extremely close attention to detail: explicitly identify, count, and note multiples of items and explicitly describe any defects, damage, missing items, or cleaning issues found. Conclude with objective recommendations for tenancy deposit deductions based on damage that exceeds fair wear and tear. Be professional. Use UK English. Do not use em dashes.`;
+                Distinguish surface stains from structural damage (holes, burns). Be highly thorough in your analysis. Pay extremely close attention to detail: explicitly identify, count, and note multiples of items and explicitly describe any defects, damage, missing items, or cleaning issues found. Conclude with objective recommendations for tenancy deposit deductions based on damage that exceeds fair wear and tear. ${tenancyInfo.hasEnsuite ? 'Ensure you explicitly identify and thoroughly note the conditions of the en-suite bathroom.' : ''} Be professional. Use UK English. Do not use em dashes.`;
             }
 
             const payload = {
@@ -533,15 +544,28 @@ Condition: [Condition]
                                         />
                                     </div>
                                     <div>
-                                        <label className="block text-sm font-medium text-gray-700 mb-1">Room Number / Name</label>
+                                        <label className="block text-sm font-medium text-gray-700 mb-1">Room Name</label>
                                         <input
                                             type="text"
                                             name="roomIdentifier"
                                             value={tenancyInfo.roomIdentifier}
                                             onChange={handleTenancyChange}
                                             className="w-full p-2 border border-gray-300 rounded-md focus:ring-[#2f314b] focus:border-[#2f314b]"
-                                            placeholder="e.g. Room 1"
+                                            placeholder="e.g. Master Bedroom"
                                         />
+                                        <div className="flex items-center mt-3">
+                                            <input
+                                                type="checkbox"
+                                                id="hasEnsuite"
+                                                name="hasEnsuite"
+                                                checked={tenancyInfo.hasEnsuite || false}
+                                                onChange={handleTenancyChange}
+                                                className="h-4 w-4 text-[#2f314b] focus:ring-[#2f314b] border-gray-300 rounded cursor-pointer"
+                                            />
+                                            <label htmlFor="hasEnsuite" className="ml-2 block text-sm text-gray-700 cursor-pointer">
+                                                Includes En-suite Bathroom
+                                            </label>
+                                        </div>
                                     </div>
                                     <div>
                                         <label className="block text-sm font-medium text-gray-700 mb-1">Tenant Name(s)</label>
