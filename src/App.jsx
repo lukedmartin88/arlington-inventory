@@ -70,13 +70,14 @@ let _imgIdCounter = 0;
 const newImgId = () => `img-${++_imgIdCounter}`;
 
 export default function App() {
-    const [step, setStep] = useState(1);
+    const [step, setStep] = useState(0);
+    const [reportType, setReportType] = useState(null); // 'inventory' or 'checkout'
     const [showApiSettings, setShowApiSettings] = useState(false);
     const [activeApiKey, setActiveApiKey] = useState(getEnvKey());
     const [tenancyInfo, setTenancyInfo] = useState({
-        propertyAddress: '', roomIdentifier: '', tenantName: '', moveInDate: '', dateOfInventory: '', clerkName: ''
+        propertyAddress: '', roomIdentifier: '', tenantName: '', moveInDate: '', checkOutDate: '', dateOfInventory: '', clerkName: ''
     });
-    const [mainImages, setMainImages] = useState([]);   // [{ id, mimeType, data }]
+    const [mainImages, setMainImages] = useState([]);   
     const [mainReport, setMainReport] = useState('');
     const [isAnalysingMain, setIsAnalysingMain] = useState(false);
     const [isPolishingMain, setIsPolishingMain] = useState(false);
@@ -205,8 +206,9 @@ export default function App() {
 
                 const tName = tenancyInfo.tenantName?.trim() || 'Tenant';
                 const rNum = tenancyInfo.roomIdentifier?.trim() || 'Room';
-                const mDate = tenancyInfo.moveInDate || 'NoDate';
-                const safeFilename = `${tName} ${rNum} ${mDate}`.replace(/[/\\?%*:|"<>]/g, '-').trim() + '.pdf';
+                const mDate = reportType === 'checkout' ? (tenancyInfo.checkOutDate || 'NoDate') : (tenancyInfo.moveInDate || 'NoDate');
+                const filePrefix = reportType === 'checkout' ? 'Checkout' : 'Inventory';
+                const safeFilename = `${filePrefix}_${tName}_${rNum}_${mDate}`.replace(/[/\\?%*:|"<>]/g, '_').trim() + '.pdf';
 
                 const opt = {
                     margin: 10,
@@ -318,7 +320,8 @@ export default function App() {
             }));
             const roomName = (tenancyInfo.roomIdentifier || 'tenant room').replace(/[<>"'`]/g, '').slice(0, 100);
 
-            const formatConstraint = `
+            // Base formatting shared by both report types
+            let formatConstraint = `
 Output the report EXACTLY in this format using bolding for headings. 
 When describing specific issues or items, refer to the corresponding image using "[Image X]" (e.g., [Image 1], [Image 2]).
 
@@ -332,8 +335,19 @@ ${roomName}
 • **[Item name]:** [Description] [Image X]
 Condition: [Condition]
 `;
-            const promptText = `Analyse the images of ${roomName} in an HMO. ${formatConstraint} 
-            Distinguish surface stains from structural damage (holes, burns). Be highly thorough in your analysis. Pay extremely close attention to detail: explicitly identify, count, and note multiples of items (e.g., all light fittings, all plug sockets) and explicitly describe any minor defects found, such as cracks in mirrors, marks, or scuffs. DO NOT suggest any improvements, recommendations, repairs, or fixes required under any circumstances; only strictly state the objective current condition. Be professional. Use UK English. Do not use em dashes.`;
+            let promptText = "";
+
+            if (reportType === 'inventory') {
+                promptText = `Analyse the images of ${roomName} in an HMO. ${formatConstraint} 
+                Distinguish surface stains from structural damage (holes, burns). Be highly thorough in your analysis. Pay extremely close attention to detail: explicitly identify, count, and note multiples of items (e.g., all light fittings, all plug sockets) and explicitly describe any minor defects found, such as cracks in mirrors, marks, or scuffs. DO NOT suggest any improvements, recommendations, repairs, or fixes required under any circumstances; only strictly state the objective current condition. Be professional. Use UK English. Do not use em dashes.`;
+            } else {
+                formatConstraint += `
+**3. Deposit Deduction Recommendations**
+• **[Item/Issue]:** [Reasoning for deduction vs fair wear and tear]
+`;
+                promptText = `Analyse the images of ${roomName} in an HMO for an end of tenancy check-out report. ${formatConstraint} 
+                Distinguish surface stains from structural damage (holes, burns). Be highly thorough in your analysis. Pay extremely close attention to detail: explicitly identify, count, and note multiples of items and explicitly describe any defects, damage, missing items, or cleaning issues found. Conclude with objective recommendations for tenancy deposit deductions based on damage that exceeds fair wear and tear. Be professional. Use UK English. Do not use em dashes.`;
+            }
 
             const payload = {
                 contents: [{ role: "user", parts: [{ text: promptText }, ...imageParts] }]
@@ -361,7 +375,10 @@ Condition: [Condition]
         if (!mainReport.trim() || !activeApiKey) return;
         setIsPolishingMain(true);
         try {
-            const promptText = `Rewrite the following notes to sound highly professional and completely objective. Maintain exact formatting, bolding, and image references like [Image X]. Ensure the tone strictly reports condition and DOES NOT suggest any improvements, recommendations, or repairs required. Use UK English only. Do not use em dashes: \n\n${mainReport}`;
+            const promptText = reportType === 'inventory' 
+                ? `Rewrite the following notes to sound highly professional and completely objective. Maintain exact formatting, bolding, and image references like [Image X]. Ensure the tone strictly reports condition and DOES NOT suggest any improvements, recommendations, or repairs required. Use UK English only. Do not use em dashes: \n\n${mainReport}`
+                : `Rewrite the following notes to sound highly professional and completely objective. Maintain exact formatting, bolding, and image references like [Image X]. Ensure the tone strictly reports check-out conditions and provides objective recommendations for deposit deductions. Use UK English only. Do not use em dashes: \n\n${mainReport}`;
+            
             const payload = { contents: [{ role: "user", parts: [{ text: promptText }] }] };
             const data = await callGeminiWithFallback(payload, activeApiKey);
             setMainReport(data.candidates?.[0]?.content?.parts?.[0]?.text || mainReport);
@@ -410,6 +427,13 @@ Condition: [Condition]
         if (e.target === e.currentTarget) setShowApiSettings(false);
     };
 
+    const handleReset = () => {
+        setStep(0);
+        setReportType(null);
+        setMainReport('');
+        setMainImages([]);
+    };
+
     return (
         <div className="min-h-screen bg-gray-100 text-gray-800 p-4 sm:p-8 print:p-0 print:bg-white font-sans">
             <style>
@@ -436,33 +460,65 @@ Condition: [Condition]
 
             <div className="max-w-4xl mx-auto bg-white rounded-xl shadow-lg overflow-hidden print:shadow-none">
 
-                <div className="bg-[#2f314b] text-white p-4 sm:p-6 print:hidden flex items-center gap-4">
-                    <img src={logoSrc} alt="Arlington Park Logo" crossOrigin="anonymous" className="h-10 sm:h-12 object-contain" />
-                    <h1 className="text-xl sm:text-2xl font-bold">Arlington Park Inventory</h1>
+                <div className="bg-[#2f314b] text-white p-4 sm:p-6 print:hidden flex items-center justify-between gap-4">
+                    <div className="flex items-center gap-4 cursor-pointer" onClick={handleReset}>
+                        <img src={logoSrc} alt="Arlington Park Logo" crossOrigin="anonymous" className="h-10 sm:h-12 object-contain" />
+                        <h1 className="text-xl sm:text-2xl font-bold">Arlington Park Reports</h1>
+                    </div>
                 </div>
 
-                <div className="flex border-b border-gray-200 print:hidden">
-                    {[1, 2, 3].map(s => (
-                        <button
-                            key={s}
-                            onClick={() => handleStepClick(s)}
-                            disabled={
-                                (s === 2 && !canProceedToStep2 && step < 2) ||
-                                (s === 3 && !canProceedToStep3 && step < 3)
-                            }
-                            className={`flex-1 py-4 text-center font-medium transition ${step === s ? 'border-b-2 border-[#2f314b] text-[#2f314b]' : 'text-gray-500 hover:bg-gray-50'} disabled:opacity-40 disabled:cursor-not-allowed`}
-                        >
-                            {s === 1 ? '1. Details' : s === 2 ? '2. Analysis' : '3. Review'}
-                        </button>
-                    ))}
-                </div>
+                {step > 0 && (
+                    <div className="flex border-b border-gray-200 print:hidden">
+                        {[1, 2, 3].map(s => (
+                            <button
+                                key={s}
+                                onClick={() => handleStepClick(s)}
+                                disabled={
+                                    (s === 2 && !canProceedToStep2 && step < 2) ||
+                                    (s === 3 && !canProceedToStep3 && step < 3)
+                                }
+                                className={`flex-1 py-4 text-center font-medium transition ${step === s ? 'border-b-2 border-[#2f314b] text-[#2f314b]' : 'text-gray-500 hover:bg-gray-50'} disabled:opacity-40 disabled:cursor-not-allowed`}
+                            >
+                                {s === 1 ? '1. Details' : s === 2 ? '2. Analysis' : '3. Review'}
+                            </button>
+                        ))}
+                    </div>
+                )}
 
                 <div className="p-6 sm:p-8">
 
-                    {/* ── STEP 1 ── */}
+                    {/* Step 0: Report Selection Screen */}
+                    {step === 0 && (
+                        <div className="flex flex-col items-center justify-center space-y-8 py-8 sm:py-16">
+                            <h2 className="text-2xl sm:text-3xl font-bold text-gray-800 text-center">Select a Report Type</h2>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 w-full max-w-3xl">
+                                <button 
+                                    onClick={() => { setReportType('inventory'); setStep(1); }} 
+                                    className="bg-white border-2 border-[#2f314b]/20 p-8 rounded-xl hover:border-[#2f314b] hover:bg-gray-50 transition group flex flex-col items-center gap-4 shadow-sm"
+                                >
+                                    <span className="text-xl font-bold text-[#2f314b]">Initial Condition Report</span>
+                                    <span className="text-sm text-center text-gray-500">Standard inventory and schedule of condition for new tenancies.</span>
+                                </button>
+                                <button 
+                                    onClick={() => { setReportType('checkout'); setStep(1); }} 
+                                    className="bg-white border-2 border-[#2f314b]/20 p-8 rounded-xl hover:border-[#2f314b] hover:bg-gray-50 transition group flex flex-col items-center gap-4 shadow-sm"
+                                >
+                                    <span className="text-xl font-bold text-[#2f314b]">Check-Out Report</span>
+                                    <span className="text-sm text-center text-gray-500">End of tenancy inspection including recommendations for deposit deductions.</span>
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Step 1: Details */}
                     {step === 1 && (
                         <div className="space-y-6">
-                            <h2 className="text-xl font-semibold text-gray-800 mb-4">Tenancy Information</h2>
+                            <div className="flex justify-between items-center mb-4">
+                                <h2 className="text-xl font-semibold text-gray-800">
+                                    {reportType === 'inventory' ? 'Inventory Details' : 'Check-Out Details'}
+                                </h2>
+                                <button onClick={handleReset} className="text-sm text-gray-500 hover:text-gray-800 underline">Change Report Type</button>
+                            </div>
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                 <div className="space-y-6">
                                     <div>
@@ -499,10 +555,17 @@ Condition: [Condition]
                                     </div>
                                 </div>
                                 <div className="space-y-6">
-                                    <div>
-                                        <label className="block text-sm font-medium text-gray-700 mb-1">Move-in Date</label>
-                                        <input type="date" name="moveInDate" value={tenancyInfo.moveInDate} onChange={handleTenancyChange} className="w-full p-2 border border-gray-300 rounded-md focus:ring-[#2f314b] focus:border-[#2f314b]" />
-                                    </div>
+                                    {reportType === 'inventory' ? (
+                                        <div>
+                                            <label className="block text-sm font-medium text-gray-700 mb-1">Move-in Date</label>
+                                            <input type="date" name="moveInDate" value={tenancyInfo.moveInDate} onChange={handleTenancyChange} className="w-full p-2 border border-gray-300 rounded-md focus:ring-[#2f314b] focus:border-[#2f314b]" />
+                                        </div>
+                                    ) : (
+                                        <div>
+                                            <label className="block text-sm font-medium text-gray-700 mb-1">Check-out Date</label>
+                                            <input type="date" name="checkOutDate" value={tenancyInfo.checkOutDate} onChange={handleTenancyChange} className="w-full p-2 border border-gray-300 rounded-md focus:ring-[#2f314b] focus:border-[#2f314b]" />
+                                        </div>
+                                    )}
                                     <div>
                                         <label className="block text-sm font-medium text-gray-700 mb-1">Inspection Date</label>
                                         <input type="date" name="dateOfInventory" value={tenancyInfo.dateOfInventory} onChange={handleTenancyChange} className="w-full p-2 border border-gray-300 rounded-md focus:ring-[#2f314b] focus:border-[#2f314b]" />
@@ -526,7 +589,7 @@ Condition: [Condition]
                         </div>
                     )}
 
-                    {/* ── STEP 2 ── */}
+                    {/* Step 2: Analysis */}
                     {step === 2 && (
                         <div className="space-y-8">
                             {errorMsg && <div className="p-4 bg-red-50 text-red-700 rounded-md text-sm border border-red-200">{errorMsg}</div>}
@@ -571,7 +634,7 @@ Condition: [Condition]
                                 )}
 
                                 <button onClick={analyseImages} disabled={isAnalysingMain || mainImages.length === 0} className="w-full py-3 bg-[#2f314b] text-white rounded-md font-bold disabled:bg-gray-300 transition">
-                                    {isAnalysingMain ? 'Analysing via AI...' : 'Generate Report'}
+                                    {isAnalysingMain ? 'Analysing via AI...' : `Generate ${reportType === 'checkout' ? 'Check-Out' : 'Inventory'} Report`}
                                 </button>
 
                                 {loadingState.active && (
@@ -619,7 +682,7 @@ Condition: [Condition]
                         </div>
                     )}
 
-                    {/* ── STEP 3 ── */}
+                    {/* Step 3: Review */}
                     {step === 3 && (
                         <div className="space-y-6">
                             {pdfFallbackMsg && (
@@ -642,7 +705,9 @@ Condition: [Condition]
 
                                 <div className="mb-8 text-center flex flex-col items-center">
                                     <img src={logoSrc} alt="Arlington Park" crossOrigin="anonymous" style={{ height: '72px' }} className="mb-4 object-contain" />
-                                    <h2 className="text-[18px] font-bold">Property Inventory & Schedule of Condition</h2>
+                                    <h2 className="text-[18px] font-bold">
+                                        {reportType === 'checkout' ? 'Check-Out Report & Schedule of Condition' : 'Property Inventory & Schedule of Condition'}
+                                    </h2>
                                 </div>
 
                                 <div className="grid grid-cols-1 gap-2 mb-8 text-[12px]">
@@ -655,7 +720,10 @@ Condition: [Condition]
                                         </span>
                                     </div>
                                     <div className="flex"><span className="w-48 font-bold">Tenant Name:</span> <span>{tenancyInfo.tenantName || ''}</span></div>
-                                    <div className="flex"><span className="w-48 font-bold">Move-in Date:</span> <span>{formatOrdinalDate(tenancyInfo.moveInDate)}</span></div>
+                                    <div className="flex">
+                                        <span className="w-48 font-bold">{reportType === 'checkout' ? 'Check-out Date:' : 'Move-in Date:'}</span> 
+                                        <span>{formatOrdinalDate(reportType === 'checkout' ? tenancyInfo.checkOutDate : tenancyInfo.moveInDate)}</span>
+                                    </div>
                                     <div className="flex"><span className="w-48 font-bold">Inspection Date:</span> <span>{formatOrdinalDate(tenancyInfo.dateOfInventory)}</span></div>
                                     <div className="flex"><span className="w-48 font-bold">Inspected By:</span> <span>{tenancyInfo.clerkName || ''}</span></div>
                                 </div>
