@@ -75,7 +75,7 @@ export default function App() {
     const [showApiSettings, setShowApiSettings] = useState(false);
     const [activeApiKey, setActiveApiKey] = useState(getEnvKey());
     const [tenancyInfo, setTenancyInfo] = useState({
-        propertyAddress: '', roomIdentifier: '', tenantName: '', moveInDate: '', checkOutDate: '', dateOfInventory: '', clerkName: '', hasEnsuite: false
+        propertyAddress: '', roomIdentifier: '', tenantName: '', moveInDate: '', checkOutDate: '', dateOfInventory: '', clerkName: '', hasEnsuite: false, checkoutScope: 'room'
     });
     const [mainImages, setMainImages] = useState([]);   
     const [mainReport, setMainReport] = useState('');
@@ -189,7 +189,6 @@ export default function App() {
                 sandboxRef.style.position = 'fixed';
                 sandboxRef.style.left = '-9999px';
                 sandboxRef.style.top = '0';
-                // Strict pixel width ensures text scales down proportionally without getting inflated
                 sandboxRef.style.width = '800px';
 
                 const clone = sourceElement.cloneNode(true);
@@ -205,7 +204,9 @@ export default function App() {
                 document.body.appendChild(sandboxRef);
 
                 const tName = tenancyInfo.tenantName?.trim() || 'Tenant';
-                const rNum = tenancyInfo.roomIdentifier?.trim() || 'Room';
+                const rNum = (reportType === 'checkout' && tenancyInfo.checkoutScope === 'property') 
+                    ? 'Full_Property' 
+                    : (tenancyInfo.roomIdentifier?.trim() || 'Room');
                 const mDate = reportType === 'checkout' ? (tenancyInfo.checkOutDate || 'NoDate') : (tenancyInfo.moveInDate || 'NoDate');
                 const filePrefix = reportType === 'checkout' ? 'Checkout' : 'Inventory';
                 const safeFilename = `${filePrefix}_${tName}_${rNum}_${mDate}`.replace(/[/\\?%*:|"<>]/g, '_').trim() + '.pdf';
@@ -318,10 +319,15 @@ export default function App() {
             const imageParts = mainImages.map(img => ({
                 inlineData: { mimeType: img.mimeType, data: img.data }
             }));
-            const roomName = (tenancyInfo.roomIdentifier || 'tenant room').replace(/[<>"'`]/g, '').slice(0, 100);
+            
+            let formatConstraint = "";
+            let promptText = "";
 
-            // Base formatting shared by both report types
-            let formatConstraint = `
+            if (reportType === 'inventory') {
+                const roomName = (tenancyInfo.roomIdentifier || 'tenant room').replace(/[<>"'`]/g, '').slice(0, 100);
+                let sectionCount = 3;
+                
+                formatConstraint = `
 Output the report EXACTLY in this format using bolding for headings. 
 When describing specific issues or items, refer to the corresponding image using "[Image X]" (e.g., [Image 1], [Image 2]).
 
@@ -334,30 +340,71 @@ When describing specific issues or items, refer to the corresponding image using
 • **[Item name]:** [Description] [Image X]
 Condition: [Condition]
 `;
-            let sectionCount = 3;
-
-            // Dynamically add En-suite bathroom section if selected
-            if (tenancyInfo.hasEnsuite) {
-                formatConstraint += `
+                if (tenancyInfo.hasEnsuite) {
+                    formatConstraint += `
 **${sectionCount}. Detailed Item Condition: En-suite Bathroom**
 • **[Item name]:** [Description] [Image X]
 Condition: [Condition]
 `;
-                sectionCount++;
-            }
+                }
 
-            let promptText = "";
-
-            if (reportType === 'inventory') {
                 promptText = `Analyse the images of ${roomName} in an HMO. ${formatConstraint} 
                 Distinguish surface stains from structural damage (holes, burns). Be highly thorough in your analysis. Pay extremely close attention to detail: explicitly identify, count, and note multiples of items (e.g., all light fittings, all plug sockets) and explicitly describe any minor defects found, such as cracks in mirrors, marks, or scuffs. DO NOT suggest any improvements, recommendations, repairs, or fixes required under any circumstances; only strictly state the objective current condition. ${tenancyInfo.hasEnsuite ? 'Ensure you explicitly identify and thoroughly note the conditions of the en-suite bathroom.' : ''} Be professional. Use UK English. Do not use em dashes.`;
-            } else {
+
+            } else if (reportType === 'checkout' && tenancyInfo.checkoutScope === 'room') {
+                const roomName = (tenancyInfo.roomIdentifier || 'tenant room').replace(/[<>"'`]/g, '').slice(0, 100);
+                let sectionCount = 3;
+                
+                formatConstraint = `
+Output the report EXACTLY in this format using bolding for headings. 
+When describing specific issues or items, refer to the corresponding image using "[Image X]" (e.g., [Image 1], [Image 2]).
+
+**1. General Overview**
+• **Cleanliness:** [assessment]
+• **Decor:** [assessment]
+• **Flooring:** [assessment]
+
+**2. Detailed Item Condition: ${roomName}**
+• **[Item name]:** [Description] [Image X]
+Condition: [Condition]
+`;
+                if (tenancyInfo.hasEnsuite) {
+                    formatConstraint += `
+**${sectionCount}. Detailed Item Condition: En-suite Bathroom**
+• **[Item name]:** [Description] [Image X]
+Condition: [Condition]
+`;
+                    sectionCount++;
+                }
                 formatConstraint += `
 **${sectionCount}. Deposit Deduction Recommendations**
 • **[Item/Issue]:** [Reasoning for deduction vs fair wear and tear]
 `;
                 promptText = `Analyse the images of ${roomName} in an HMO for an end of tenancy check-out report. ${formatConstraint} 
                 Distinguish surface stains from structural damage (holes, burns). Be highly thorough in your analysis. Pay extremely close attention to detail: explicitly identify, count, and note multiples of items and explicitly describe any defects, damage, missing items, or cleaning issues found. Conclude with objective recommendations for tenancy deposit deductions based on damage that exceeds fair wear and tear. ${tenancyInfo.hasEnsuite ? 'Ensure you explicitly identify and thoroughly note the conditions of the en-suite bathroom.' : ''} Be professional. Use UK English. Do not use em dashes.`;
+
+            } else if (reportType === 'checkout' && tenancyInfo.checkoutScope === 'property') {
+                formatConstraint = `
+Output the report EXACTLY in this format using bolding for headings. 
+When describing specific issues or items, refer to the corresponding image using "[Image X]" (e.g., [Image 1], [Image 2]).
+
+**1. General Overview**
+• **Cleanliness:** [assessment]
+• **Decor:** [assessment]
+• **Flooring:** [assessment]
+
+**2. Room-by-Room Condition**
+(For each distinct room or area identified in the images, e.g., Kitchen, Living Room, Bathroom, Bedroom, Outside Space, create a bold header and list its items):
+
+**[Room/Area Name]**
+• **[Item name]:** [Description] [Image X]
+Condition: [Condition]
+
+**3. Deposit Deduction Recommendations**
+• **[Item/Issue]:** [Reasoning for deduction vs fair wear and tear]
+`;
+                promptText = `Analyse the images of a full property for an end of tenancy check-out report. The images may include bathrooms, kitchens, outside spaces, living rooms, bedrooms, etc. ${formatConstraint} 
+                Categorise your findings room by room based on visual context. Distinguish surface stains from structural damage (holes, burns). Be highly thorough in your analysis. Pay extremely close attention to detail: explicitly identify, count, and note multiples of items and explicitly describe any defects, damage, missing items, or cleaning issues found across the entire property. Conclude with objective recommendations for tenancy deposit deductions based on damage that exceeds fair wear and tear. Be professional. Use UK English. Do not use em dashes.`;
             }
 
             const payload = {
@@ -386,9 +433,14 @@ Condition: [Condition]
         if (!mainReport.trim() || !activeApiKey) return;
         setIsPolishingMain(true);
         try {
-            const promptText = reportType === 'inventory' 
-                ? `Rewrite the following notes to sound highly professional and completely objective. Maintain exact formatting, bolding, and image references like [Image X]. Ensure the tone strictly reports condition and DOES NOT suggest any improvements, recommendations, or repairs required. Use UK English only. Do not use em dashes: \n\n${mainReport}`
-                : `Rewrite the following notes to sound highly professional and completely objective. Maintain exact formatting, bolding, and image references like [Image X]. Ensure the tone strictly reports check-out conditions and provides objective recommendations for deposit deductions. Use UK English only. Do not use em dashes: \n\n${mainReport}`;
+            let promptText = "";
+            if (reportType === 'inventory') {
+                promptText = `Rewrite the following notes to sound highly professional and completely objective. Maintain exact formatting, bolding, and image references like [Image X]. Ensure the tone strictly reports condition and DOES NOT suggest any improvements, recommendations, or repairs required. Use UK English only. Do not use em dashes: \n\n${mainReport}`;
+            } else if (tenancyInfo.checkoutScope === 'property') {
+                promptText = `Rewrite the following notes to sound highly professional and completely objective. Maintain exact formatting, bolding (especially the room headers), and image references like [Image X]. Ensure the tone strictly reports full property check-out conditions and provides objective recommendations for deposit deductions. Use UK English only. Do not use em dashes: \n\n${mainReport}`;
+            } else {
+                promptText = `Rewrite the following notes to sound highly professional and completely objective. Maintain exact formatting, bolding, and image references like [Image X]. Ensure the tone strictly reports check-out conditions and provides objective recommendations for deposit deductions. Use UK English only. Do not use em dashes: \n\n${mainReport}`;
+            }
             
             const payload = { contents: [{ role: "user", parts: [{ text: promptText }] }] };
             const data = await callGeminiWithFallback(payload, activeApiKey);
@@ -443,6 +495,9 @@ Condition: [Condition]
         setReportType(null);
         setMainReport('');
         setMainImages([]);
+        setTenancyInfo({
+            propertyAddress: '', roomIdentifier: '', tenantName: '', moveInDate: '', checkOutDate: '', dateOfInventory: '', clerkName: '', hasEnsuite: false, checkoutScope: 'room'
+        });
     };
 
     return (
@@ -504,7 +559,7 @@ Condition: [Condition]
                             <h2 className="text-2xl sm:text-3xl font-bold text-gray-800 text-center">Select a Report Type</h2>
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 w-full max-w-3xl">
                                 <button 
-                                    onClick={() => { setReportType('inventory'); setStep(1); }} 
+                                    onClick={() => { setReportType('inventory'); setTenancyInfo(prev => ({...prev, checkoutScope: 'room'})); setStep(1); }} 
                                     className="bg-white border-2 border-[#2f314b]/20 p-8 rounded-xl hover:border-[#2f314b] hover:bg-gray-50 transition group flex flex-col items-center gap-4 shadow-sm"
                                 >
                                     <span className="text-xl font-bold text-[#2f314b]">Initial Condition Report</span>
@@ -530,6 +585,23 @@ Condition: [Condition]
                                 </h2>
                                 <button onClick={handleReset} className="text-sm text-gray-500 hover:text-gray-800 underline">Change Report Type</button>
                             </div>
+
+                            {reportType === 'checkout' && (
+                                <div className="bg-gray-50 p-4 rounded-lg border border-gray-200 mb-6">
+                                    <label className="block text-sm font-bold text-gray-700 mb-3">Check-Out Scope</label>
+                                    <div className="flex flex-col sm:flex-row gap-4 sm:gap-8">
+                                        <label className="flex items-center cursor-pointer">
+                                            <input type="radio" name="checkoutScope" value="room" checked={tenancyInfo.checkoutScope === 'room'} onChange={handleTenancyChange} className="w-4 h-4 text-[#2f314b] focus:ring-[#2f314b] border-gray-300" />
+                                            <span className="ml-2 text-sm text-gray-800">Individual Room</span>
+                                        </label>
+                                        <label className="flex items-center cursor-pointer">
+                                            <input type="radio" name="checkoutScope" value="property" checked={tenancyInfo.checkoutScope === 'property'} onChange={handleTenancyChange} className="w-4 h-4 text-[#2f314b] focus:ring-[#2f314b] border-gray-300" />
+                                            <span className="ml-2 text-sm text-gray-800">Full Property (All Rooms, Kitchens, Outside)</span>
+                                        </label>
+                                    </div>
+                                </div>
+                            )}
+
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                 <div className="space-y-6">
                                     <div>
@@ -543,30 +615,34 @@ Condition: [Condition]
                                             placeholder="e.g. 123 High Street, Norwich"
                                         />
                                     </div>
-                                    <div>
-                                        <label className="block text-sm font-medium text-gray-700 mb-1">Room Name</label>
-                                        <input
-                                            type="text"
-                                            name="roomIdentifier"
-                                            value={tenancyInfo.roomIdentifier}
-                                            onChange={handleTenancyChange}
-                                            className="w-full p-2 border border-gray-300 rounded-md focus:ring-[#2f314b] focus:border-[#2f314b]"
-                                            placeholder="e.g. Master Bedroom"
-                                        />
-                                        <div className="flex items-center mt-3">
+
+                                    {(reportType === 'inventory' || tenancyInfo.checkoutScope === 'room') && (
+                                        <div>
+                                            <label className="block text-sm font-medium text-gray-700 mb-1">Room Name</label>
                                             <input
-                                                type="checkbox"
-                                                id="hasEnsuite"
-                                                name="hasEnsuite"
-                                                checked={tenancyInfo.hasEnsuite || false}
+                                                type="text"
+                                                name="roomIdentifier"
+                                                value={tenancyInfo.roomIdentifier}
                                                 onChange={handleTenancyChange}
-                                                className="h-4 w-4 text-[#2f314b] focus:ring-[#2f314b] border-gray-300 rounded cursor-pointer"
+                                                className="w-full p-2 border border-gray-300 rounded-md focus:ring-[#2f314b] focus:border-[#2f314b]"
+                                                placeholder="e.g. Master Bedroom"
                                             />
-                                            <label htmlFor="hasEnsuite" className="ml-2 block text-sm text-gray-700 cursor-pointer">
-                                                Includes En-suite Bathroom
-                                            </label>
+                                            <div className="flex items-center mt-3">
+                                                <input
+                                                    type="checkbox"
+                                                    id="hasEnsuite"
+                                                    name="hasEnsuite"
+                                                    checked={tenancyInfo.hasEnsuite || false}
+                                                    onChange={handleTenancyChange}
+                                                    className="h-4 w-4 text-[#2f314b] focus:ring-[#2f314b] border-gray-300 rounded cursor-pointer"
+                                                />
+                                                <label htmlFor="hasEnsuite" className="ml-2 block text-sm text-gray-700 cursor-pointer">
+                                                    Includes En-suite Bathroom
+                                                </label>
+                                            </div>
                                         </div>
-                                    </div>
+                                    )}
+
                                     <div>
                                         <label className="block text-sm font-medium text-gray-700 mb-1">Tenant Name(s)</label>
                                         <input
@@ -658,7 +734,7 @@ Condition: [Condition]
                                 )}
 
                                 <button onClick={analyseImages} disabled={isAnalysingMain || mainImages.length === 0} className="w-full py-3 bg-[#2f314b] text-white rounded-md font-bold disabled:bg-gray-300 transition">
-                                    {isAnalysingMain ? 'Analysing via AI...' : `Generate ${reportType === 'checkout' ? 'Check-Out' : 'Inventory'} Report`}
+                                    {isAnalysingMain ? 'Analysing via AI...' : `Generate ${reportType === 'checkout' && tenancyInfo.checkoutScope === 'property' ? 'Full Property ' : ''}${reportType === 'checkout' ? 'Check-Out' : 'Inventory'} Report`}
                                 </button>
 
                                 {loadingState.active && (
@@ -738,8 +814,7 @@ Condition: [Condition]
                                     <div className="flex">
                                         <span className="w-48 font-bold">Property Address:</span>
                                         <span>
-                                            {tenancyInfo.roomIdentifier || ''}
-                                            {tenancyInfo.roomIdentifier && tenancyInfo.propertyAddress ? ', ' : ''}
+                                            {(reportType === 'inventory' || tenancyInfo.checkoutScope === 'room') && tenancyInfo.roomIdentifier ? `${tenancyInfo.roomIdentifier}, ` : ''}
                                             {tenancyInfo.propertyAddress || ''}
                                         </span>
                                     </div>
