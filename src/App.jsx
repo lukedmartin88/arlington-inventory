@@ -189,6 +189,7 @@ export default function App() {
                 sandboxRef.style.position = 'fixed';
                 sandboxRef.style.left = '-9999px';
                 sandboxRef.style.top = '0';
+                // Strict pixel width ensures text scales down proportionally without getting inflated
                 sandboxRef.style.width = '800px';
 
                 const clone = sourceElement.cloneNode(true);
@@ -261,7 +262,7 @@ export default function App() {
                     canvas.width = img.width * scale;
                     canvas.height = img.height * scale;
                     canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-                    resolve({ id: newImgId(), mimeType: 'image/jpeg', data: canvas.toDataURL('image/jpeg', 0.8).split(',')[1] });
+                    resolve({ id: newImgId(), mimeType: 'image/jpeg', data: canvas.toDataURL('image/jpeg', 0.8).split(',')[1], room: '' });
                 };
             };
         });
@@ -287,6 +288,10 @@ export default function App() {
 
     const handleRemoveImage = useCallback((idToRemove) => {
         setMainImages(prev => prev.filter(img => img.id !== idToRemove));
+    }, []);
+
+    const handleImageRoomChange = useCallback((id, newRoomName) => {
+        setMainImages(prev => prev.map(img => img.id === id ? { ...img, room: newRoomName } : img));
     }, []);
 
     const analyseImages = async () => {
@@ -316,17 +321,13 @@ export default function App() {
         }, 800);
 
         try {
-            const imageParts = mainImages.map(img => ({
-                inlineData: { mimeType: img.mimeType, data: img.data }
-            }));
-            
             let formatConstraint = "";
             let promptText = "";
+            
+            const roomName = (tenancyInfo.roomIdentifier || 'tenant room').replace(/[<>"'`]/g, '').slice(0, 100);
 
             if (reportType === 'inventory') {
-                const roomName = (tenancyInfo.roomIdentifier || 'tenant room').replace(/[<>"'`]/g, '').slice(0, 100);
                 let sectionCount = 3;
-                
                 formatConstraint = `
 Output the report EXACTLY in this format using bolding for headings. 
 When describing specific issues or items, refer to the corresponding image using "[Image X]" (e.g., [Image 1], [Image 2]).
@@ -349,12 +350,10 @@ Condition: [Condition]
                 }
 
                 promptText = `Analyse the images of ${roomName} in an HMO. ${formatConstraint} 
-                Distinguish surface stains from structural damage (holes, burns). Be highly thorough in your analysis. Pay extremely close attention to detail: explicitly identify, count, and note multiples of items (e.g., all light fittings, all plug sockets) and explicitly describe any minor defects found, such as cracks in mirrors, marks, or scuffs. DO NOT suggest any improvements, recommendations, repairs, or fixes required under any circumstances; only strictly state the objective current condition. ${tenancyInfo.hasEnsuite ? 'Ensure you explicitly identify and thoroughly note the conditions of the en-suite bathroom.' : ''} Be professional. Use UK English. Do not use em dashes.`;
+                Distinguish surface stains from structural damage (holes, burns). Be highly thorough in your analysis. Pay extremely close attention to detail: explicitly identify, count, and note multiples of items (e.g., all light fittings, all plug sockets) and explicitly describe any minor defects found, such as cracks in mirrors, marks, or scuffs. Use the 'Assigned Room' labels provided with each image to accurately identify the location of items. DO NOT suggest any improvements, recommendations, repairs, or fixes required under any circumstances; only strictly state the objective current condition. ${tenancyInfo.hasEnsuite ? 'Ensure you explicitly identify and thoroughly note the conditions of the en-suite bathroom.' : ''} Be professional. Use UK English. Do not use em dashes.`;
 
             } else if (reportType === 'checkout' && tenancyInfo.checkoutScope === 'room') {
-                const roomName = (tenancyInfo.roomIdentifier || 'tenant room').replace(/[<>"'`]/g, '').slice(0, 100);
                 let sectionCount = 3;
-                
                 formatConstraint = `
 Output the report EXACTLY in this format using bolding for headings. 
 When describing specific issues or items, refer to the corresponding image using "[Image X]" (e.g., [Image 1], [Image 2]).
@@ -381,7 +380,7 @@ Condition: [Condition]
 • **[Item/Issue]:** [Reasoning for deduction vs fair wear and tear]
 `;
                 promptText = `Analyse the images of ${roomName} in an HMO for an end of tenancy check-out report. ${formatConstraint} 
-                Distinguish surface stains from structural damage (holes, burns). Be highly thorough in your analysis. Pay extremely close attention to detail: explicitly identify, count, and note multiples of items and explicitly describe any defects, damage, missing items, or cleaning issues found. Conclude with objective recommendations for tenancy deposit deductions based on damage that exceeds fair wear and tear. ${tenancyInfo.hasEnsuite ? 'Ensure you explicitly identify and thoroughly note the conditions of the en-suite bathroom.' : ''} Be professional. Use UK English. Do not use em dashes.`;
+                Distinguish surface stains from structural damage (holes, burns). Be highly thorough in your analysis. Pay extremely close attention to detail: explicitly identify, count, and note multiples of items and explicitly describe any defects, damage, missing items, or cleaning issues found. Use the 'Assigned Room' labels provided with each image to accurately identify the location of items. Conclude with objective recommendations for tenancy deposit deductions based on damage that exceeds fair wear and tear. ${tenancyInfo.hasEnsuite ? 'Ensure you explicitly identify and thoroughly note the conditions of the en-suite bathroom.' : ''} Be professional. Use UK English. Do not use em dashes.`;
 
             } else if (reportType === 'checkout' && tenancyInfo.checkoutScope === 'property') {
                 formatConstraint = `
@@ -404,11 +403,19 @@ Condition: [Condition]
 • **[Item/Issue]:** [Reasoning for deduction vs fair wear and tear]
 `;
                 promptText = `Analyse the images of a full property for an end of tenancy check-out report. The images may include bathrooms, kitchens, outside spaces, living rooms, bedrooms, etc. ${formatConstraint} 
-                Categorise your findings room by room based on visual context. Distinguish surface stains from structural damage (holes, burns). Be highly thorough in your analysis. Pay extremely close attention to detail: explicitly identify, count, and note multiples of items and explicitly describe any defects, damage, missing items, or cleaning issues found across the entire property. Conclude with objective recommendations for tenancy deposit deductions based on damage that exceeds fair wear and tear. Be professional. Use UK English. Do not use em dashes.`;
+                Categorise your findings room by room based on the 'Assigned Room' labels provided with each image and visual context. Distinguish surface stains from structural damage (holes, burns). Be highly thorough in your analysis. Pay extremely close attention to detail: explicitly identify, count, and note multiples of items and explicitly describe any defects, damage, missing items, or cleaning issues found across the entire property. Conclude with objective recommendations for tenancy deposit deductions based on damage that exceeds fair wear and tear. Be professional. Use UK English. Do not use em dashes.`;
             }
 
+            // Interleave text prompts with the images so the AI correctly associates labels with images
+            const payloadParts = [{ text: promptText }];
+            mainImages.forEach((img, index) => {
+                const roomContext = img.room.trim() ? ` (Assigned Room: ${img.room.trim()})` : '';
+                payloadParts.push({ text: `\n[Image ${index + 1}]${roomContext}:` });
+                payloadParts.push({ inlineData: { mimeType: img.mimeType, data: img.data } });
+            });
+
             const payload = {
-                contents: [{ role: "user", parts: [{ text: promptText }, ...imageParts] }]
+                contents: [{ role: "user", parts: payloadParts }]
             };
 
             const data = await callGeminiWithFallback(payload, activeApiKey);
@@ -710,24 +717,35 @@ Condition: [Condition]
                                 </div>
 
                                 {mainImages.length > 0 && (
-                                    <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 mb-4">
+                                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 mb-4">
                                         {mainImages.map((img, idx) => (
-                                            <div key={img.id} className="relative group rounded overflow-hidden border border-gray-200">
-                                                <img
-                                                    src={`data:${img.mimeType};base64,${img.data}`}
-                                                    alt={`Upload ${idx + 1}`}
-                                                    className="w-full h-20 object-cover"
-                                                />
-                                                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition flex items-center justify-center">
-                                                    <button
-                                                        onClick={() => handleRemoveImage(img.id)}
-                                                        className="opacity-0 group-hover:opacity-100 transition bg-red-600 text-white text-xs rounded px-2 py-1 font-medium"
-                                                        title="Remove image"
-                                                    >
-                                                        Remove
-                                                    </button>
+                                            <div key={img.id} className="relative group rounded overflow-hidden border border-gray-200 flex flex-col">
+                                                <div className="relative">
+                                                    <img
+                                                        src={`data:${img.mimeType};base64,${img.data}`}
+                                                        alt={`Upload ${idx + 1}`}
+                                                        className="w-full h-24 object-cover"
+                                                    />
+                                                    <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition flex items-center justify-center">
+                                                        <button
+                                                            onClick={() => handleRemoveImage(img.id)}
+                                                            className="opacity-0 group-hover:opacity-100 transition bg-red-600 text-white text-xs rounded px-2 py-1 font-medium"
+                                                            title="Remove image"
+                                                        >
+                                                            Remove
+                                                        </button>
+                                                    </div>
                                                 </div>
-                                                <p className="text-[10px] text-center text-gray-500 py-0.5 bg-gray-50">Image {idx + 1}</p>
+                                                <div className="p-2 bg-gray-50 flex flex-col gap-1 border-t border-gray-200">
+                                                    <p className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider">Image {idx + 1}</p>
+                                                    <input
+                                                        type="text"
+                                                        placeholder="Assign room..."
+                                                        value={img.room || ''}
+                                                        onChange={(e) => handleImageRoomChange(img.id, e.target.value)}
+                                                        className="w-full text-xs p-1.5 border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-[#2f314b] focus:border-[#2f314b]"
+                                                    />
+                                                </div>
                                             </div>
                                         ))}
                                     </div>
@@ -855,7 +873,9 @@ Condition: [Condition]
                                                         pageBreakInside: 'avoid' 
                                                     }}
                                                 >
-                                                    <p className="text-[10px] font-bold mb-1 text-gray-500 uppercase tracking-wider">Image {idx + 1}</p>
+                                                    <p className="text-[10px] font-bold mb-1 text-gray-500 uppercase tracking-wider">
+                                                        Image {idx + 1} {img.room && <span className="text-gray-400 normal-case font-normal block truncate mt-0.5" title={img.room}>{img.room}</span>}
+                                                    </p>
                                                     <img
                                                         src={`data:${img.mimeType};base64,${img.data}`}
                                                         className="w-full h-40 object-cover rounded shadow-sm border border-gray-300"
