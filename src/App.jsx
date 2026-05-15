@@ -89,14 +89,12 @@ export default function App() {
 
     const progressIntervalRef = useRef(null);
 
-    // Cleanup interval on unmount
     useEffect(() => {
         return () => {
             if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
         };
     }, []);
 
-    // Load PDF engine
     useEffect(() => {
         if (!document.getElementById('html2pdf-script')) {
             const script = document.createElement("script");
@@ -108,7 +106,6 @@ export default function App() {
         }
     }, []);
 
-    // Pre-load logo as Base64 with graceful fallback
     useEffect(() => {
         const img = new Image();
         img.crossOrigin = "Anonymous";
@@ -127,7 +124,6 @@ export default function App() {
         img.src = LOGO_URL;
     }, []);
 
-    // Close API settings modal on Escape key
     useEffect(() => {
         if (!showApiSettings) return;
         const handleKey = (e) => { if (e.key === 'Escape') setShowApiSettings(false); };
@@ -189,7 +185,6 @@ export default function App() {
                 sandboxRef.style.position = 'fixed';
                 sandboxRef.style.left = '-9999px';
                 sandboxRef.style.top = '0';
-                // Strict pixel width ensures text scales down proportionally without getting inflated
                 sandboxRef.style.width = '800px';
 
                 const clone = sourceElement.cloneNode(true);
@@ -326,6 +321,13 @@ export default function App() {
             
             const roomName = (tenancyInfo.roomIdentifier || 'tenant room').replace(/[<>"'`]/g, '').slice(0, 100);
 
+            const commonInstructions = `
+Do NOT state that an item is "present" or "exists". The presence of the item is already confirmed by the photograph. 
+Jump straight to describing the condition, quantities, and cleanliness. 
+Pay extremely close attention to detail: explicitly identify, count, and note multiples of items (e.g. all light fittings, all plug sockets) and explicitly describe any minor defects found, such as cracks in mirrors, marks, or scuffs. 
+Use the 'Assigned Room' labels provided with each image to accurately identify the location of items. 
+Use UK English only. Do not use em dashes.`;
+
             if (reportType === 'inventory') {
                 let sectionCount = 3;
                 formatConstraint = `
@@ -338,19 +340,20 @@ When describing specific issues or items, refer to the corresponding image using
 • **Flooring:** [assessment]
 
 **2. Detailed Item Condition: ${roomName}**
-• **[Item name]:** [Description] [Image X]
-Condition: [Condition]
+• **[Item name]:** [Condition/Description] [Image X]
+Condition: [Detailed Condition Only]
 `;
                 if (tenancyInfo.hasEnsuite) {
                     formatConstraint += `
 **${sectionCount}. Detailed Item Condition: En-suite Bathroom**
-• **[Item name]:** [Description] [Image X]
-Condition: [Condition]
+• **[Item name]:** [Condition/Description] [Image X]
+Condition: [Detailed Condition Only]
 `;
                 }
 
                 promptText = `Analyse the images of ${roomName} in an HMO. ${formatConstraint} 
-                Distinguish surface stains from structural damage (holes, burns). Be highly thorough in your analysis. Pay extremely close attention to detail: explicitly identify, count, and note multiples of items (e.g., all light fittings, all plug sockets) and explicitly describe any minor defects found, such as cracks in mirrors, marks, or scuffs. Use the 'Assigned Room' labels provided with each image to accurately identify the location of items. DO NOT suggest any improvements, recommendations, repairs, or fixes required under any circumstances; only strictly state the objective current condition. ${tenancyInfo.hasEnsuite ? 'Ensure you explicitly identify and thoroughly note the conditions of the en-suite bathroom.' : ''} Be professional. Use UK English. Do not use em dashes.`;
+                ${commonInstructions} 
+                DO NOT suggest any improvements, recommendations, repairs, or fixes required under any circumstances; only strictly state the objective current condition. ${tenancyInfo.hasEnsuite ? 'Ensure you explicitly identify and thoroughly note the conditions of the en-suite bathroom.' : ''} Be professional.`;
 
             } else if (reportType === 'checkout' && tenancyInfo.checkoutScope === 'room') {
                 let sectionCount = 3;
@@ -364,14 +367,14 @@ When describing specific issues or items, refer to the corresponding image using
 • **Flooring:** [assessment]
 
 **2. Detailed Item Condition: ${roomName}**
-• **[Item name]:** [Description] [Image X]
-Condition: [Condition]
+• **[Item name]:** [Condition/Description] [Image X]
+Condition: [Detailed Condition Only]
 `;
                 if (tenancyInfo.hasEnsuite) {
                     formatConstraint += `
 **${sectionCount}. Detailed Item Condition: En-suite Bathroom**
-• **[Item name]:** [Description] [Image X]
-Condition: [Condition]
+• **[Item name]:** [Condition/Description] [Image X]
+Condition: [Detailed Condition Only]
 `;
                     sectionCount++;
                 }
@@ -380,7 +383,8 @@ Condition: [Condition]
 • **[Item/Issue]:** [Reasoning for deduction vs fair wear and tear]
 `;
                 promptText = `Analyse the images of ${roomName} in an HMO for an end of tenancy check-out report. ${formatConstraint} 
-                Distinguish surface stains from structural damage (holes, burns). Be highly thorough in your analysis. Pay extremely close attention to detail: explicitly identify, count, and note multiples of items and explicitly describe any defects, damage, missing items, or cleaning issues found. Use the 'Assigned Room' labels provided with each image to accurately identify the location of items. Conclude with objective recommendations for tenancy deposit deductions based on damage that exceeds fair wear and tear. ${tenancyInfo.hasEnsuite ? 'Ensure you explicitly identify and thoroughly note the conditions of the en-suite bathroom.' : ''} Be professional. Use UK English. Do not use em dashes.`;
+                ${commonInstructions} 
+                Identify any defects, damage, missing items, or cleaning issues found. Conclude with objective recommendations for tenancy deposit deductions based on damage that exceeds fair wear and tear. ${tenancyInfo.hasEnsuite ? 'Ensure you explicitly identify and thoroughly note the conditions of the en-suite bathroom.' : ''} Be professional.`;
 
             } else if (reportType === 'checkout' && tenancyInfo.checkoutScope === 'property') {
                 formatConstraint = `
@@ -396,17 +400,17 @@ When describing specific issues or items, refer to the corresponding image using
 (For each distinct room or area identified in the images, e.g., Kitchen, Living Room, Bathroom, Bedroom, Outside Space, create a bold header and list its items):
 
 **[Room/Area Name]**
-• **[Item name]:** [Description] [Image X]
-Condition: [Condition]
+• **[Item name]:** [Condition/Description] [Image X]
+Condition: [Detailed Condition Only]
 
 **3. Deposit Deduction Recommendations**
 • **[Item/Issue]:** [Reasoning for deduction vs fair wear and tear]
 `;
                 promptText = `Analyse the images of a full property for an end of tenancy check-out report. The images may include bathrooms, kitchens, outside spaces, living rooms, bedrooms, etc. ${formatConstraint} 
-                Categorise your findings room by room based on the 'Assigned Room' labels provided with each image and visual context. Distinguish surface stains from structural damage (holes, burns). Be highly thorough in your analysis. Pay extremely close attention to detail: explicitly identify, count, and note multiples of items and explicitly describe any defects, damage, missing items, or cleaning issues found across the entire property. Conclude with objective recommendations for tenancy deposit deductions based on damage that exceeds fair wear and tear. Be professional. Use UK English. Do not use em dashes.`;
+                ${commonInstructions} 
+                Categorise your findings room by room based on the 'Assigned Room' labels provided with each image and visual context. Identify any defects, damage, missing items, or cleaning issues found across the entire property. Conclude with objective recommendations for tenancy deposit deductions based on damage that exceeds fair wear and tear. Be professional.`;
             }
 
-            // Interleave text prompts with the images so the AI correctly associates labels with images
             const payloadParts = [{ text: promptText }];
             mainImages.forEach((img, index) => {
                 const roomContext = img.room.trim() ? ` (Assigned Room: ${img.room.trim()})` : '';
@@ -441,12 +445,12 @@ Condition: [Condition]
         setIsPolishingMain(true);
         try {
             let promptText = "";
+            const constraint = "Strictly reporting objective conditions only. Never state that an item is 'present' or 'exists' as the photo confirms existence; only describe its specific state, quantity, and cleanliness. Use UK English only. No em dashes.";
+            
             if (reportType === 'inventory') {
-                promptText = `Rewrite the following notes to sound highly professional and completely objective. Maintain exact formatting, bolding, and image references like [Image X]. Ensure the tone strictly reports condition and DOES NOT suggest any improvements, recommendations, or repairs required. Use UK English only. Do not use em dashes: \n\n${mainReport}`;
-            } else if (tenancyInfo.checkoutScope === 'property') {
-                promptText = `Rewrite the following notes to sound highly professional and completely objective. Maintain exact formatting, bolding (especially the room headers), and image references like [Image X]. Ensure the tone strictly reports full property check-out conditions and provides objective recommendations for deposit deductions. Use UK English only. Do not use em dashes: \n\n${mainReport}`;
+                promptText = `Rewrite the following notes highly professionally. ${constraint} DO NOT suggest any improvements or repairs. \n\n${mainReport}`;
             } else {
-                promptText = `Rewrite the following notes to sound highly professional and completely objective. Maintain exact formatting, bolding, and image references like [Image X]. Ensure the tone strictly reports check-out conditions and provides objective recommendations for deposit deductions. Use UK English only. Do not use em dashes: \n\n${mainReport}`;
+                promptText = `Rewrite the following notes highly professionally. ${constraint} Ensure objective recommendations for deposit deductions are preserved. \n\n${mainReport}`;
             }
             
             const payload = { contents: [{ role: "user", parts: [{ text: promptText }] }] };
@@ -560,7 +564,6 @@ Condition: [Condition]
 
                 <div className="p-6 sm:p-8">
 
-                    {/* Step 0: Report Selection Screen */}
                     {step === 0 && (
                         <div className="flex flex-col items-center justify-center space-y-8 py-8 sm:py-16">
                             <h2 className="text-2xl sm:text-3xl font-bold text-gray-800 text-center">Select a Report Type</h2>
@@ -583,7 +586,6 @@ Condition: [Condition]
                         </div>
                     )}
 
-                    {/* Step 1: Details */}
                     {step === 1 && (
                         <div className="space-y-6">
                             <div className="flex justify-between items-center mb-4">
@@ -696,7 +698,6 @@ Condition: [Condition]
                         </div>
                     )}
 
-                    {/* Step 2: Analysis */}
                     {step === 2 && (
                         <div className="space-y-8">
                             {errorMsg && <div className="p-4 bg-red-50 text-red-700 rounded-md text-sm border border-red-200">{errorMsg}</div>}
@@ -800,7 +801,6 @@ Condition: [Condition]
                         </div>
                     )}
 
-                    {/* Step 3: Review */}
                     {step === 3 && (
                         <div className="space-y-6">
                             {pdfFallbackMsg && (
@@ -818,7 +818,6 @@ Condition: [Condition]
                                 </div>
                             </div>
 
-                            {/* PRINTABLE PDF AREA - All fonts completely pixel-locked for PDF */}
                             <div className="bg-white p-10 print:p-0 max-w-[210mm] mx-auto shadow-sm text-gray-900" id="printable-report" style={{ fontFamily: "Arial, sans-serif" }}>
 
                                 <div className="mb-8 text-center flex flex-col items-center">
