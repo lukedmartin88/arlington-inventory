@@ -13,7 +13,7 @@ import {
 } from 'firebase/firestore';
 
 const firebaseConfig = {
-  apiKey:
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
   authDomain: "fire-safety-testing.firebaseapp.com",
   projectId: "fire-safety-testing",
   storageBucket: "fire-safety-testing.firebasestorage.app",
