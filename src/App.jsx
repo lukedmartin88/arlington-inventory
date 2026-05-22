@@ -353,7 +353,39 @@ export default function App() {
         };
         img.src = LOGO_URL;
     }, []);
+// Sync browser back history with app views
+  useEffect(() => {
+    // Only push state if the current history state is different to avoid duplicate loops
+    if (!window.history.state || window.history.state.view !== currentView || window.history.state.step !== step) {
+      window.history.pushState({ view: currentView, step: step }, "");
+    }
+  }, [currentView, step]);
 
+  useEffect(() => {
+    const handlePopState = async (event) => {
+      if (event.state) {
+        const { view, step: targetStep } = event.state;
+        
+        // Handle moving backward through wizard steps
+        if (currentView === 'wizard' && view === 'wizard') {
+          if (step > targetStep) {
+            setStep(targetStep);
+          }
+        } else {
+          // Handle moving backward between high level views
+          if (view === 'portfolio' && selectedPropertyId) {
+            const reports = await dbGetReportsByProperty(selectedPropertyId);
+            setPropertyReports(reports.sort((a,b) => new Date(b.reportDate) - new Date(a.reportDate)));
+          }
+          setCurrentView(view);
+        }
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [currentView, step, selectedPropertyId]);
+  
     // --- Modal Handler ---
     const handleModalBackdropClick = (e) => {
         if (e.target === e.currentTarget) setShowApiSettings(false);
@@ -1693,33 +1725,6 @@ Condition: [Detailed Condition Only]
                     AI API Settings
                 </button>
             </footer>
-            // Sync browser back history with app views
-useEffect(() => {
-  // Push a state into the history whenever the view changes
-  window.history.pushState({ view: currentView, step: step }, "");
-}, [currentView, step]);
-
-useEffect(() => {
-  const handlePopState = (event) => {
-    // If the browser back button is clicked, check where we should go
-    if (event.state) {
-      const { view, step: targetStep } = event.state;
-      
-      if (currentView === 'wizard') {
-        if (step > 0) {
-          setStep(step - 1);
-        } else {
-          setCurrentView('portfolio');
-        }
-      } else if (currentView === 'view' || currentView === 'portfolio') {
-        setCurrentView('home');
-      }
-    }
-  };
-
-  window.addEventListener('popstate', handlePopState);
-  return () => window.removeEventListener('popstate', handlePopState);
-}, [currentView, step]);
 
             {showApiSettings && (
                 <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 print:hidden p-4 transition-opacity" onClick={handleModalBackdropClick}>
