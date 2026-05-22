@@ -907,13 +907,20 @@ Condition: [Detailed Condition Only]
 
             <div className="max-w-4xl mx-auto bg-white rounded-xl shadow-lg overflow-hidden print:shadow-none">
 
-                {/* Main Branding Header */}
-                <div className="bg-[#2f314b] text-white p-4 sm:p-6 print:hidden flex items-center justify-between gap-4">
-                    <div className="flex items-center gap-4 cursor-pointer" onClick={goHome}>
-                        <img src={logoSrc} alt="Arlington Park Logo" crossOrigin="anonymous" className="h-10 sm:h-12 object-contain" />
-                        <h1 className="text-xl sm:text-2xl font-bold">Arlington Park Reports</h1>
-                    </div>
-                </div>
+               {/* Main Branding Header */}
+<div className="bg-[#2f314b] text-white p-4 sm:p-6 print:hidden flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-4">
+  <div className="flex items-center gap-4 cursor-pointer" onClick={goHome}>
+    <img src={logoSrc} alt="Arlington Park Logo" crossOrigin="anonymous" className="h-10 sm:h-12 object-contain" />
+    <h1 className="text-xl sm:text-2xl font-bold">Arlington Park Reports</h1>
+  </div>
+  
+  {currentProperty?.address && (currentView === 'wizard' || currentView === 'view') && (
+    <div className="bg-white/10 px-4 py-2 rounded-lg border border-white/20 text-sm font-semibold max-w-md truncate">
+      <span className="text-white/60 font-normal block text-[11px] uppercase tracking-wider mb-0.5">Active Property</span>
+      {currentProperty.address}
+    </div>
+  )}
+</div>
 
                 {/* ─── HOME VIEW (Properties Database) ─── */}
                 {currentView === 'home' && (
