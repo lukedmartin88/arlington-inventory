@@ -116,79 +116,41 @@ const newId = () => `id-${Date.now()}-${++_idCounter}`;
 // --- Native Browser Database (IndexedDB) ---
 const DB_NAME = 'ArlingtonDB';
 const DB_VERSION = 1;
-const STORE_PROPS = 'properties';
-const STORE_REPORTS = 'reports';
 
-const initDB = () => new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-    request.onerror = (e) => reject(e.target.error);
-    request.onsuccess = (e) => resolve(e.target.result);
-    request.onupgradeneeded = (e) => {
-        const db = e.target.result;
-        if (!db.objectStoreNames.contains(STORE_PROPS)) {
-            db.createObjectStore(STORE_PROPS, { keyPath: 'id' });
-        }
-        if (!db.objectStoreNames.contains(STORE_REPORTS)) {
-            const store = db.createObjectStore(STORE_REPORTS, { keyPath: 'id' });
-            store.createIndex('propertyId', 'propertyId', { unique: false });
-        }
-    };
-});
+// --- Firebase Firestore Database ---
 
 const dbGetAll = async (storeName) => {
-    const db = await initDB();
-    return new Promise((resolve, reject) => {
-        const tx = db.transaction(storeName, 'readonly');
-        const store = tx.objectStore(storeName);
-        const request = store.getAll();
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error);
-    });
+    const snapshot = await getDocs(collection(firestoreDb, storeName));
+    return snapshot.docs.map(doc => doc.data());
 };
 
 const dbPut = async (storeName, item) => {
-    const db = await initDB();
-    return new Promise((resolve, reject) => {
-        const tx = db.transaction(storeName, 'readwrite');
-        const store = tx.objectStore(storeName);
-        store.put(item);
-        tx.oncomplete = () => resolve(item);
-        tx.onerror = () => reject(tx.error);
-    });
+    const docRef = doc(firestoreDb, storeName, item.id);
+    await setDoc(docRef, item);
+    return item;
 };
 
 const dbDelete = async (storeName, id) => {
-    const db = await initDB();
-    return new Promise((resolve, reject) => {
-        const tx = db.transaction(storeName, 'readwrite');
-        const store = tx.objectStore(storeName);
-        store.delete(id);
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error);
-    });
+    const docRef = doc(firestoreDb, storeName, id);
+    await deleteDoc(docRef);
 };
 
 const dbGetReportsByProperty = async (propertyId) => {
-    const db = await initDB();
-    return new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE_REPORTS, 'readonly');
-        const store = tx.objectStore(STORE_REPORTS);
-        const index = store.index('propertyId');
-        const request = index.getAll(propertyId);
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error);
-    });
+    const reportsRef = collection(firestoreDb, STORE_REPORTS);
+    const q = query(reportsRef, where("propertyId", "==", propertyId));
+    const snapshot = await getDocs(q);
+    return snapshot.docs.map(doc => doc.data());
 };
 
 const dbGetReport = async (id) => {
-    const db = await initDB();
-    return new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE_REPORTS, 'readonly');
-        const store = tx.objectStore(STORE_REPORTS);
-        const request = store.get(id);
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error);
-    });
+    const docRef = doc(firestoreDb, STORE_REPORTS, id);
+    const docSnap = await getDoc(docRef);
+    
+    if (docSnap.exists()) {
+        return docSnap.data();
+    } else {
+        throw new Error("Report not found in database.");
+    }
 };
 
 // --- Fire Safety Sub-Components ---
