@@ -1,5 +1,34 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getFirestore, 
+  collection, 
+  doc, 
+  setDoc, 
+  getDoc, 
+  getDocs, 
+  deleteDoc, 
+  query, 
+  where 
+} from 'firebase/firestore';
 
+const firebaseConfig = {
+  apiKey: "AIzaSyCR_M_TJKiXeDIn6Mj3RwiHQxFRx3bvSvA",
+  authDomain: "fire-safety-testing.firebaseapp.com",
+  projectId: "fire-safety-testing",
+  storageBucket: "fire-safety-testing.firebasestorage.app",
+  messagingSenderId: "622006469176",
+  appId: "1:622006469176:web:fa890d9b1ec95ba9869ccd",
+  measurementId: "G-DZ935GWD3B"
+};
+
+// Initialise Firebase and Firestore
+const app = initializeApp(firebaseConfig);
+const firestoreDb = getFirestore(app);
+
+// Keep your existing store constants
+const STORE_PROPS = 'properties';
+const STORE_REPORTS = 'reports';
 // --- API Configuration ---
 const getEnvKey = () => {
     try {
