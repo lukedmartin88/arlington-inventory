@@ -1693,6 +1693,33 @@ Condition: [Detailed Condition Only]
                     AI API Settings
                 </button>
             </footer>
+            // Sync browser back history with app views
+useEffect(() => {
+  // Push a state into the history whenever the view changes
+  window.history.pushState({ view: currentView, step: step }, "");
+}, [currentView, step]);
+
+useEffect(() => {
+  const handlePopState = (event) => {
+    // If the browser back button is clicked, check where we should go
+    if (event.state) {
+      const { view, step: targetStep } = event.state;
+      
+      if (currentView === 'wizard') {
+        if (step > 0) {
+          setStep(step - 1);
+        } else {
+          setCurrentView('portfolio');
+        }
+      } else if (currentView === 'view' || currentView === 'portfolio') {
+        setCurrentView('home');
+      }
+    }
+  };
+
+  window.addEventListener('popstate', handlePopState);
+  return () => window.removeEventListener('popstate', handlePopState);
+}, [currentView, step]);
 
             {showApiSettings && (
                 <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 print:hidden p-4 transition-opacity" onClick={handleModalBackdropClick}>
