@@ -11,6 +11,14 @@ import {
   query, 
   where 
 } from 'firebase/firestore';
+import {
+  getStorage,
+  ref,
+  uploadString,
+  getDownloadURL,
+  deleteObject,
+  listAll
+} from 'firebase/storage';
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -22,9 +30,10 @@ const firebaseConfig = {
   measurementId: "G-DZ935GWD3B"
 };
 
-// Initialise Firebase and Firestore
+// Initialise Firebase, Firestore, and Storage
 const app = initializeApp(firebaseConfig);
 const firestoreDb = getFirestore(app);
+const storage = getStorage(app);
 
 // Keep your existing store constants
 const STORE_PROPS = 'properties';
@@ -44,9 +53,9 @@ const getEnvKey = () => {
 const callGeminiWithFallback = async (payload, activeApiKey) => {
     let lastError = null;
     const defaultModels = [
-        'gemini-2.5-flash-preview-09-2025',
+        'gemini-2.5-flash-preview-05-20',
         'gemini-2.5-flash',
-        'gemini-2.0-flash'
+        'gemini-2.0-flash-exp',
     ];
 
     for (const model of defaultModels) {
@@ -150,6 +159,29 @@ const dbGetReport = async (id) => {
         return docSnap.data();
     } else {
         throw new Error("Report not found in database.");
+    }
+};
+
+// --- Firebase Storage Helpers ---
+
+// Upload a single base64 image to Storage, returns its download URL
+const uploadImageToStorage = async (reportId, imageId, mimeType, base64Data) => {
+    const path = `reports/${reportId}/${imageId}`;
+    const imageRef = ref(storage, path);
+    const dataUrl = `data:${mimeType};base64,${base64Data}`;
+    await uploadString(imageRef, dataUrl, 'data_url');
+    return await getDownloadURL(imageRef);
+};
+
+// Delete all images stored under a report's folder
+const deleteReportImages = async (reportId) => {
+    try {
+        const folderRef = ref(storage, `reports/${reportId}`);
+        const listResult = await listAll(folderRef);
+        await Promise.all(listResult.items.map(itemRef => deleteObject(itemRef)));
+    } catch (e) {
+        // Folder may not exist if report had no images — safe to ignore
+        console.warn("Could not delete storage images for report:", reportId, e.message);
     }
 };
 
@@ -450,6 +482,7 @@ export default function App() {
         const report = await dbGetReport(id);
         setReportType(report.reportType);
         setTenancyInfo(report.data.tenancyInfo || {});
+        // Images saved with Storage URL in the `url` field; `data` will be empty for saved reports
         setMainImages(report.data.mainImages || []);
         setMainReport(report.data.mainReport || '');
         setMaintenanceMeta(report.data.maintenanceMeta || { date: '', clerkName: '' });
@@ -463,6 +496,7 @@ export default function App() {
 
     const handleSaveReportToPortfolio = async () => {
         setIsProcessing(true);
+        setErrorMsg('');
         let displayDate = new Date().toISOString();
         let inspectorName = '';
 
@@ -474,22 +508,63 @@ export default function App() {
             inspectorName = maintenanceMeta.clerkName;
         }
 
-        const reportData = {
-            id: newId(),
-            propertyId: selectedPropertyId,
-            reportType,
-            reportDate: displayDate,
-            inspectorName,
-            createdAt: new Date().toISOString(),
-            data: { tenancyInfo, mainImages, mainReport, maintenanceMeta, multiRoomData, fireSafetyData }
-        };
+        const reportId = newId();
 
         try {
+            // Upload mainImages to Firebase Storage and replace base64 data with download URLs
+            setLoadingState({ active: true, progress: 10, text: 'Uploading images...' });
+
+            const mainImagesUploaded = await Promise.all(
+                mainImages.map(async (img) => {
+                    if (!img.data) return img; // already a URL or empty
+                    try {
+                        const url = await uploadImageToStorage(reportId, img.id, img.mimeType, img.data);
+                        return { ...img, data: '', url };
+                    } catch (e) {
+                        console.error("Failed to upload image:", img.id, e);
+                        return { ...img, data: '' }; // save without image rather than failing entirely
+                    }
+                })
+            );
+
+            const multiRoomDataUploaded = await Promise.all(
+                multiRoomData.map(async (room) => {
+                    const uploadedImages = await Promise.all(
+                        room.images.map(async (img) => {
+                            if (!img.data) return img;
+                            try {
+                                const url = await uploadImageToStorage(reportId, img.id, img.mimeType, img.data);
+                                return { ...img, data: '', url };
+                            } catch (e) {
+                                console.error("Failed to upload multi-room image:", img.id, e);
+                                return { ...img, data: '' };
+                            }
+                        })
+                    );
+                    return { ...room, images: uploadedImages };
+                })
+            );
+
+            setLoadingState({ active: true, progress: 80, text: 'Saving report...' });
+
+            const reportData = {
+                id: reportId,
+                propertyId: selectedPropertyId,
+                reportType,
+                reportDate: displayDate,
+                inspectorName,
+                createdAt: new Date().toISOString(),
+                data: { tenancyInfo, mainImages: mainImagesUploaded, mainReport, maintenanceMeta, multiRoomData: multiRoomDataUploaded, fireSafetyData }
+            };
+
             await dbPut(STORE_REPORTS, reportData);
+            setLoadingState({ active: true, progress: 100, text: 'Saved!' });
+            setTimeout(() => setLoadingState({ active: false, progress: 0, text: '' }), 1000);
             await goPortfolio();
         } catch (err) {
             console.error(err);
-            setErrorMsg("Failed to save report to portfolio.");
+            setErrorMsg("Failed to save report. Check your connection and try again.");
+            setLoadingState({ active: false, progress: 0, text: '' });
         } finally {
             setIsProcessing(false);
         }
@@ -497,6 +572,7 @@ export default function App() {
 
     const handleDeleteReport = async (id) => {
         if (window.confirm("Delete this report permanently?")) {
+            await deleteReportImages(id); // remove images from Firebase Storage
             await dbDelete(STORE_REPORTS, id);
             const reports = await dbGetReportsByProperty(selectedPropertyId);
             setPropertyReports(reports.sort((a,b) => new Date(b.reportDate) - new Date(a.reportDate)));
@@ -1294,7 +1370,7 @@ Condition: [Detailed Condition Only]
                                                     {mainImages.map((img, idx) => (
                                                         <div key={img.id} className="relative group rounded-xl overflow-hidden border-2 border-gray-200 flex flex-col bg-white">
                                                             <div className="relative">
-                                                                <img src={`data:${img.mimeType};base64,${img.data}`} alt={`Upload ${idx + 1}`} className="w-full h-32 object-cover" />
+                                                                <img src={img.data ? `data:${img.mimeType};base64,${img.data}` : img.url} alt={`Upload ${idx + 1}`} className="w-full h-32 object-cover" />
                                                                 <div className="absolute inset-0 bg-black/40 transition opacity-0 group-hover:opacity-100 flex items-center justify-center">
                                                                     <button onClick={() => handleRemoveImage(img.id)} className="bg-red-600 text-white text-xs rounded-lg px-4 py-2 font-bold hover:bg-red-700 shadow">Remove</button>
                                                                 </div>
@@ -1371,7 +1447,7 @@ Condition: [Detailed Condition Only]
                                                             <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-3 mb-6">
                                                                 {room.images.map((img, idx) => (
                                                                     <div key={img.id} className="relative group rounded-lg overflow-hidden border border-gray-300 shadow-sm">
-                                                                        <img src={`data:${img.mimeType};base64,${img.data}`} className="w-full h-20 object-cover" />
+                                                                        <img src={img.data ? `data:${img.mimeType};base64,${img.data}` : img.url} className="w-full h-20 object-cover" />
                                                                         <button onClick={() => handleRemoveMultiImage(room.id, img.id)} className="absolute inset-0 bg-red-600/90 text-white text-xs font-bold opacity-0 group-hover:opacity-100 transition flex items-center justify-center">Remove</button>
                                                                         <div className="absolute bottom-0 left-0 right-0 bg-black/60 text-white text-[9px] font-bold uppercase text-center py-0.5">Image {idx + 1}</div>
                                                                     </div>
@@ -1548,7 +1624,7 @@ Condition: [Detailed Condition Only]
                                                             </p>
                                                             {img.room && <p className="text-[10px] text-gray-500 font-bold text-center truncate px-1" title={img.room}>{img.room}</p>}
                                                         </div>
-                                                        <img src={`data:${img.mimeType};base64,${img.data}`} className="w-full h-40 object-cover rounded-b-lg shadow-sm border border-gray-300 border-t-0" />
+                                                        <img src={img.data ? `data:${img.mimeType};base64,${img.data}` : img.url} className="w-full h-40 object-cover rounded-b-lg shadow-sm border border-gray-300 border-t-0" />
                                                     </div>
                                                 ))}
                                             </div>
@@ -1597,7 +1673,7 @@ Condition: [Detailed Condition Only]
                                                         {room.images.map((img, iIdx) => (
                                                             <div key={img.id} className="break-inside-avoid inline-block align-top mb-4" style={{ width: '31%', marginRight: iIdx % 3 === 2 ? '0' : '3.5%', fontSize: '12px' }}>
                                                                 <p className="text-[10px] font-bold mb-1 text-gray-500 uppercase tracking-wider text-center bg-gray-100 py-1 rounded-t border border-gray-300 border-b-0">Image {iIdx + 1}</p>
-                                                                <img src={`data:${img.mimeType};base64,${img.data}`} className="w-full h-32 object-cover rounded-b shadow-sm border border-gray-300" />
+                                                                <img src={img.data ? `data:${img.mimeType};base64,${img.data}` : img.url} className="w-full h-32 object-cover rounded-b shadow-sm border border-gray-300" />
                                                             </div>
                                                         ))}
                                                     </div>
@@ -1739,8 +1815,8 @@ Condition: [Detailed Condition Only]
                             className="w-full p-3 text-sm border-2 border-gray-200 rounded-xl focus:ring-[#2f314b] focus:border-[#2f314b] mb-4 font-medium transition"
                         />
                         <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 mb-6">
-                            <p className="text-[11px] font-bold text-blue-800 uppercase tracking-wide mb-1">Local Storage Active</p>
-                            <p className="text-[11px] font-medium text-blue-600 leading-relaxed">This key and all property reports are saved securely to your browser's local IndexedDB. They are never sent to external database servers.</p>
+                            <p className="text-[11px] font-bold text-blue-800 uppercase tracking-wide mb-1">Cloud Storage Active</p>
+                            <p className="text-[11px] font-medium text-blue-600 leading-relaxed">Your API key is saved to your browser's local storage. Property reports and data are saved securely to your Firebase Firestore database.</p>
                         </div>
                         <div className="flex justify-end">
                             <button onClick={() => setShowApiSettings(false)} className="bg-[#2f314b] text-white px-8 py-3 rounded-xl font-bold hover:bg-[#2f314b]/90 transition shadow-md">
