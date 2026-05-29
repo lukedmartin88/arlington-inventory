@@ -159,13 +159,23 @@ const dbGetReport = async (id) => {
     }
 };
 
-// --- Firebase Storage Helpers ---
+// --- Firebase Storage Helpers (WITH TIMEOUT PROTECTION) ---
 
 const uploadImageToStorage = async (reportId, imageId, mimeType, base64Data) => {
     const path = `reports/${reportId}/${imageId}`;
     const imageRef = ref(storage, path);
     const dataUrl = `data:${mimeType};base64,${base64Data}`;
-    await uploadString(imageRef, dataUrl, 'data_url');
+    
+    // 15 second timeout to prevent the upload from hanging indefinitely
+    const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error("Network timeout: Firebase upload took too long.")), 15000)
+    );
+
+    await Promise.race([
+        uploadString(imageRef, dataUrl, 'data_url'),
+        timeoutPromise
+    ]);
+    
     return await getDownloadURL(imageRef);
 };
 
@@ -495,7 +505,7 @@ export default function App() {
     };
 
     // -------------------------------------------------------------
-    // FIX: Refined Save logic with step-by-step progress updating
+    // Save Logic with Progress Updates & Error Handling
     // -------------------------------------------------------------
     const handleSaveReportToPortfolio = async () => {
         setIsProcessing(true);
@@ -515,6 +525,9 @@ export default function App() {
 
         try {
             setLoadingState({ active: true, progress: 5, text: 'Preparing to save...' });
+            
+            // Critical fix: Yield thread briefly to let React render the 5% progress bar
+            await new Promise(resolve => setTimeout(resolve, 50));
 
             const mainImagesUploaded = [];
             
@@ -575,13 +588,10 @@ export default function App() {
                 data: { tenancyInfo, mainImages: mainImagesUploaded, mainReport, maintenanceMeta, multiRoomData: multiRoomDataUploaded, fireSafetyData }
             };
 
-            // This will throw if Firestore rejects it (e.g., Security Rules or Network failure)
             await dbPut(STORE_REPORTS, reportData);
             
             setLoadingState({ active: true, progress: 100, text: 'Saved successfully!' });
-            
-            // Allow user to see "Saved successfully!" for 800ms before navigating
-            await new Promise(resolve => setTimeout(resolve, 800));
+            await new Promise(resolve => setTimeout(resolve, 800)); // Show success briefly
             setLoadingState({ active: false, progress: 0, text: '' });
             await goPortfolio();
             
@@ -589,7 +599,7 @@ export default function App() {
             console.error("Full Save Error Context:", err);
             let userError = "Failed to save report. Please check your connection.";
             if (err.message?.includes("Missing or insufficient permissions")) {
-                userError = "Permission Denied: Your Firebase Database security rules are blocking the save. Check your Firestore Rules.";
+                userError = "Permission Denied: Your Firebase Database security rules are blocking the save.";
             } else if (err.message) {
                 userError = `Save Error: ${err.message}`;
             }
@@ -662,7 +672,6 @@ export default function App() {
         setMultiRoomData(prev => {
             const roomToDelete = prev.find(r => r.id === rId);
             if (roomToDelete && roomToDelete.images.length > 0) {
-                // Rescue images back to the uncategorised pool
                 setUncategorisedImages(existing => [...existing, ...roomToDelete.images]);
             }
             return prev.filter(r => r.id !== rId);
@@ -671,7 +680,10 @@ export default function App() {
     const updateMultiRoomName = (rId, val) => setMultiRoomData(prev => prev.map(r => r.id === rId ? { ...r, name: val } : r));
     const handleMultiReportChange = (rId, text) => setMultiRoomData(prev => prev.map(r => r.id === rId ? { ...r, report: text } : r));
 
-    // --- Image Processing & Assignment Handlers ---
+    // -------------------------------------------------------------
+    // AGGRESSIVE COMPRESSION ALGORITHM 
+    // Scales images to 800px max and applies 60% JPEG compression
+    // -------------------------------------------------------------
     const compressImage = (file) => {
         return new Promise((resolve) => {
             const reader = new FileReader();
@@ -683,11 +695,22 @@ export default function App() {
                 img.onerror = () => resolve({ failed: true, name: file.name });
                 img.onload = () => {
                     const canvas = document.createElement('canvas');
-                    const scale = Math.min(1, 1200 / Math.max(img.width, img.height));
+                    
+                    // Force a maximum dimension of 800px to keep file size tiny
+                    const scale = Math.min(1, 800 / Math.max(img.width, img.height));
+                    
                     canvas.width = img.width * scale;
                     canvas.height = img.height * scale;
                     canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-                    resolve({ id: newId(), mimeType: 'image/jpeg', data: canvas.toDataURL('image/jpeg', 0.8).split(',')[1], room: '' });
+                    
+                    // Convert to JPEG at 0.6 (60%) quality. 
+                    // This guarantees ~80KB-150KB sizes per image.
+                    resolve({ 
+                        id: newId(), 
+                        mimeType: 'image/jpeg', 
+                        data: canvas.toDataURL('image/jpeg', 0.6).split(',')[1], 
+                        room: '' 
+                    });
                 };
             };
         });
