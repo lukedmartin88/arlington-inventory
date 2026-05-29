@@ -319,7 +319,11 @@ export default function App() {
     // Multi-Room Data Arrays
     const [maintenanceMeta, setMaintenanceMeta] = useState({ date: '', clerkName: '' });
     const [multiRoomData, setMultiRoomData] = useState([{ id: newId(), name: '', images: [], report: '' }]);
-    const [uncategorisedImages, setUncategorisedImages] = useState([]); // Added state for bulk uploads
+    const [uncategorisedImages, setUncategorisedImages] = useState([]);
+    
+    // Lightbox State
+    const [lightboxImage, setLightboxImage] = useState(null);
+    const roomInputRefs = useRef({});
 
     // Fire Safety Data Arrays
     const [fireSafetyData, setFireSafetyData] = useState({
@@ -416,11 +420,16 @@ export default function App() {
     };
 
     useEffect(() => {
-        if (!showApiSettings) return;
-        const handleKey = (e) => { if (e.key === 'Escape') setShowApiSettings(false); };
+        if (!showApiSettings && !lightboxImage) return;
+        const handleKey = (e) => { 
+            if (e.key === 'Escape') {
+                setShowApiSettings(false);
+                setLightboxImage(null);
+            }
+        };
         window.addEventListener('keydown', handleKey);
         return () => window.removeEventListener('keydown', handleKey);
-    }, [showApiSettings]);
+    }, [showApiSettings, lightboxImage]);
 
     // --- High Level Navigation ---
     const handleSelectProperty = async (id) => {
@@ -603,7 +612,25 @@ export default function App() {
     };
 
     // --- Multi-Room Structure Handlers ---
-    const addMultiRoom = () => setMultiRoomData(prev => [...prev, { id: newId(), name: '', images: [], report: '' }]);
+    const addMultiRoom = () => {
+        const rId = newId();
+        setMultiRoomData(prev => [...prev, { id: rId, name: '', images: [], report: '' }]);
+        
+        // Auto-focus the newly created input
+        setTimeout(() => {
+            if (roomInputRefs.current[rId]) {
+                roomInputRefs.current[rId].focus();
+            }
+        }, 50);
+    };
+
+    const handleRoomInputKeyDown = (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            addMultiRoom();
+        }
+    };
+
     const removeMultiRoom = (rId) => {
         setMultiRoomData(prev => {
             const roomToDelete = prev.find(r => r.id === rId);
@@ -617,7 +644,7 @@ export default function App() {
     const updateMultiRoomName = (rId, val) => setMultiRoomData(prev => prev.map(r => r.id === rId ? { ...r, name: val } : r));
     const handleMultiReportChange = (rId, text) => setMultiRoomData(prev => prev.map(r => r.id === rId ? { ...r, report: text } : r));
 
-    // --- Image Processing & Drag and Drop ---
+    // --- Image Processing & Assignment Handlers ---
     const compressImage = (file) => {
         return new Promise((resolve) => {
             const reader = new FileReader();
@@ -672,59 +699,39 @@ export default function App() {
         setMultiRoomData(prev => prev.map(r => r.id === rId ? { ...r, images: r.images.filter(i => i.id !== imgId) } : r));
     };
 
-    // Drag and Drop Logic
-    const handleDragStart = (e, imgId, sourceId) => {
-        e.dataTransfer.setData('imgId', imgId);
-        e.dataTransfer.setData('sourceId', sourceId);
-    };
-
-    const handleDragOver = (e) => {
-        e.preventDefault(); 
-    };
-
-    const handleDrop = (e, targetId) => {
-        e.preventDefault();
-        const imgId = e.dataTransfer.getData('imgId');
-        const sourceId = e.dataTransfer.getData('sourceId');
-
-        if (sourceId === targetId) return;
-
-        let imgData = null;
-
-        // 1. Find and remove from source
-        if (sourceId === 'uncategorised') {
-            setUncategorisedImages(prev => {
-                imgData = prev.find(img => img.id === imgId);
-                return prev.filter(img => img.id !== imgId);
-            });
-        } else {
-            setMultiRoomData(prev => {
-                let newData = [...prev];
-                const sourceRoomIndex = newData.findIndex(r => r.id === sourceId);
-                if (sourceRoomIndex > -1) {
-                    imgData = newData[sourceRoomIndex].images.find(img => img.id === imgId);
-                    newData[sourceRoomIndex].images = newData[sourceRoomIndex].images.filter(img => img.id !== imgId);
-                }
-                return newData;
-            });
-        }
-
-        // 2. Add to target after a small delay to ensure state sets resolve 
-        setTimeout(() => {
-            if (!imgData) return;
-            if (targetId === 'uncategorised') {
-                setUncategorisedImages(prev => [...prev, imgData]);
-            } else {
-                setMultiRoomData(prev => {
-                    let newData = [...prev];
-                    const targetRoomIndex = newData.findIndex(r => r.id === targetId);
-                    if (targetRoomIndex > -1) {
-                        newData[targetRoomIndex].images = [...newData[targetRoomIndex].images, imgData];
+    // Move from uncategorised to a specific room
+    const assignImageToRoom = (imgId, targetRoomId) => {
+        if (!targetRoomId) return;
+        setUncategorisedImages(prev => {
+            const imgToMove = prev.find(img => img.id === imgId);
+            if (imgToMove) {
+                setMultiRoomData(rooms => rooms.map(room => {
+                    if (room.id === targetRoomId) {
+                        return { ...room, images: [...room.images, imgToMove] };
                     }
-                    return newData;
-                });
+                    return room;
+                }));
             }
-        }, 0);
+            return prev.filter(img => img.id !== imgId);
+        });
+    };
+
+    // Move from a specific room back to uncategorised
+    const moveImageToUncategorised = (roomId, imgId) => {
+        setMultiRoomData(rooms => {
+            let imgToMove = null;
+            const updatedRooms = rooms.map(room => {
+                if (room.id === roomId) {
+                    imgToMove = room.images.find(img => img.id === imgId);
+                    return { ...room, images: room.images.filter(img => img.id !== imgId) };
+                }
+                return room;
+            });
+            if (imgToMove) {
+                setUncategorisedImages(prev => [...prev, imgToMove]);
+            }
+            return updatedRooms;
+        });
     };
 
     // --- PDF Generation ---
@@ -913,7 +920,6 @@ Condition: [Detailed Condition Only]
         }
     };
 
-    // Modified to accept a specific room ID for individual generation
     const analyseMultiRoomImages = async (specificRoomId = null) => {
         if (!activeApiKey) return setErrorMsg("Missing API Key.");
         setIsAnalysingMain(true);
@@ -1078,6 +1084,17 @@ Condition: [Detailed Condition Only]
                 }
                 `}
             </style>
+
+            {/* Lightbox Modal */}
+            {lightboxImage && (
+                <div className="fixed inset-0 bg-black/90 z-[100] flex items-center justify-center p-4 cursor-zoom-out" onClick={() => setLightboxImage(null)}>
+                    <img 
+                        src={lightboxImage.data ? `data:${lightboxImage.mimeType};base64,${lightboxImage.data}` : lightboxImage.url} 
+                        className="max-h-[90vh] max-w-[90vw] object-contain rounded-xl shadow-2xl" 
+                        alt="Enlarged view" 
+                    />
+                </div>
+            )}
 
             <div className="max-w-4xl mx-auto bg-white rounded-xl shadow-lg overflow-hidden print:shadow-none">
 
@@ -1369,11 +1386,20 @@ Condition: [Detailed Condition Only]
                                     {isMultiRoom && (
                                         <div className="bg-white border-2 border-gray-200 rounded-xl p-6 sm:p-8 mt-6">
                                             <h3 className="text-lg font-bold text-gray-800 mb-4 border-b-2 border-gray-100 pb-2 uppercase tracking-wide">Rooms to Inspect</h3>
+                                            <p className="text-sm text-gray-500 mb-4 font-medium">Type a room name and press <kbd className="bg-gray-200 px-2 py-1 rounded text-xs font-bold text-gray-700 border border-gray-300 shadow-sm mx-1">Enter</kbd> to quickly add the next room.</p>
                                             <div className="space-y-4">
                                                 {multiRoomData.map((room, idx) => (
                                                     <div key={room.id} className="flex items-center gap-3 bg-gray-50 p-3 rounded-lg border border-gray-200">
                                                         <span className="font-bold text-gray-400 w-6 text-center">{idx + 1}.</span>
-                                                        <input type="text" value={room.name} onChange={(e) => updateMultiRoomName(room.id, e.target.value)} placeholder="e.g. Kitchen, Bedroom 1, En-suite Bathroom" className="flex-1 p-3 border border-gray-300 rounded-lg focus:ring-[#2f314b] font-medium bg-white" />
+                                                        <input 
+                                                            type="text" 
+                                                            value={room.name} 
+                                                            onChange={(e) => updateMultiRoomName(room.id, e.target.value)} 
+                                                            onKeyDown={handleRoomInputKeyDown}
+                                                            placeholder="e.g. Kitchen, Bedroom 1, En-suite Bathroom" 
+                                                            className="flex-1 p-3 border border-gray-300 rounded-lg focus:ring-[#2f314b] font-medium bg-white"
+                                                            ref={el => roomInputRefs.current[room.id] = el}
+                                                        />
                                                         <button onClick={() => removeMultiRoom(room.id)} className="text-red-500 hover:bg-red-100 hover:text-red-700 px-4 py-3 rounded-lg text-sm font-bold transition">Delete</button>
                                                     </div>
                                                 ))}
@@ -1436,9 +1462,14 @@ Condition: [Detailed Condition Only]
                                                     {mainImages.map((img, idx) => (
                                                         <div key={img.id} className="relative group rounded-xl overflow-hidden border-2 border-gray-200 flex flex-col bg-white">
                                                             <div className="relative">
-                                                                <img src={img.data ? `data:${img.mimeType};base64,${img.data}` : img.url} alt={`Upload ${idx + 1}`} className="w-full h-32 object-cover" />
-                                                                <div className="absolute inset-0 bg-black/40 transition opacity-0 group-hover:opacity-100 flex items-center justify-center">
-                                                                    <button onClick={() => handleRemoveImage(img.id)} className="bg-red-600 text-white text-xs rounded-lg px-4 py-2 font-bold hover:bg-red-700 shadow">Remove</button>
+                                                                <img 
+                                                                    src={img.data ? `data:${img.mimeType};base64,${img.data}` : img.url} 
+                                                                    alt={`Upload ${idx + 1}`} 
+                                                                    className="w-full h-32 object-cover cursor-zoom-in" 
+                                                                    onClick={() => setLightboxImage(img)}
+                                                                />
+                                                                <div className="absolute inset-0 bg-black/40 transition opacity-0 group-hover:opacity-100 flex items-center justify-center pointer-events-none">
+                                                                    <button onClick={() => handleRemoveImage(img.id)} className="bg-red-600 text-white text-xs rounded-lg px-4 py-2 font-bold hover:bg-red-700 shadow pointer-events-auto">Remove</button>
                                                                 </div>
                                                             </div>
                                                             <div className="p-3 bg-gray-50 flex flex-col gap-2 border-t border-gray-200">
@@ -1479,471 +1510,14 @@ Condition: [Detailed Condition Only]
                                         </div>
                                     )}
 
-                                    {/* Multi-Room Analysis UI (Maintenance, Full Property Checkout) with Drag and Drop */}
+                                    {/* Multi-Room Analysis UI (Maintenance, Full Property Checkout) with Dropdown Selectors */}
                                     {isMultiRoom && (
                                         <div className="space-y-6">
                                             
                                             {/* Master Bulk Upload Panel */}
                                             <div className="bg-white border-2 border-gray-100 p-6 rounded-xl shadow-sm">
                                                 <h3 className="text-xl font-bold text-gray-900 border-b-2 border-gray-200 pb-2 mb-4">Master Photo Upload</h3>
-                                                <p className="text-sm text-gray-500 mb-4">Upload all your photos here in bulk, then drag and drop them into the appropriate rooms below.</p>
+                                                <p className="text-sm text-gray-500 mb-4 font-medium">Upload all your photos here in bulk, then use the dropdown beneath each photo to allocate it to the correct room.</p>
                                                 
                                                 <div className="p-4 border-2 border-dashed border-[#2f314b]/30 rounded-xl bg-gray-50 mb-6 transition hover:bg-gray-100">
-                                                    <input type="file" multiple accept="image/*" onChange={handleBulkImageUpload} className="block w-full text-sm text-gray-500 file:mr-6 file:py-3 file:px-6 file:rounded-lg file:border-0 file:text-sm file:font-bold file:bg-[#2f314b] file:text-white hover:file:bg-[#2f314b]/90 cursor-pointer" />
-                                                </div>
-
-                                                {/* Uncategorised Images Drop Zone */}
-                                                <div 
-                                                    className="min-h-[120px] bg-gray-50 border-2 border-dashed border-gray-300 rounded-xl p-4 transition-colors"
-                                                    onDragOver={handleDragOver}
-                                                    onDrop={(e) => handleDrop(e, 'uncategorised')}
-                                                >
-                                                    <h4 className="text-sm font-bold text-gray-700 uppercase tracking-wide mb-3">Uncategorised Photos</h4>
-                                                    {uncategorisedImages.length === 0 ? (
-                                                        <p className="text-sm text-gray-400 font-medium flex items-center justify-center h-16">Drag photos back here to remove them from a room.</p>
-                                                    ) : (
-                                                        <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-3">
-                                                            {uncategorisedImages.map((img) => (
-                                                                <div 
-                                                                    key={img.id} 
-                                                                    draggable 
-                                                                    onDragStart={(e) => handleDragStart(e, img.id, 'uncategorised')}
-                                                                    className="relative group rounded-lg overflow-hidden border border-gray-300 shadow-sm cursor-move hover:ring-2 hover:ring-[#2f314b] transition-all"
-                                                                >
-                                                                    <img src={img.data ? `data:${img.mimeType};base64,${img.data}` : img.url} className="w-full h-16 object-cover" />
-                                                                    <button onClick={() => removeUncategorisedImage(img.id)} className="absolute inset-0 bg-red-600/90 text-white text-xs font-bold opacity-0 group-hover:opacity-100 transition flex items-center justify-center">Delete</button>
-                                                                </div>
-                                                            ))}
-                                                        </div>
-                                                    )}
-                                                </div>
-                                            </div>
-
-                                            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-end mb-4 gap-4 mt-8">
-                                                <h3 className="text-xl font-bold text-gray-900 border-b-2 border-gray-200 pb-1">Room-by-Room Breakdown</h3>
-                                                <button onClick={() => analyseMultiRoomImages()} disabled={isAnalysingMain} className="bg-[#2f314b] text-white px-8 py-3 rounded-xl font-bold shadow-md hover:bg-[#2f314b]/90 transition disabled:bg-gray-400 w-full sm:w-auto">
-                                                    {isAnalysingMain ? 'Analysing...' : 'Generate All AI Reports'}
-                                                </button>
-                                            </div>
-
-                                            {loadingState.active && (
-                                                <div className="bg-[#2f314b]/5 p-5 rounded-xl border border-[#2f314b]/10 mb-6">
-                                                    <div className="flex justify-between text-sm text-[#2f314b] font-bold mb-3 uppercase tracking-wider">
-                                                        <span>{loadingState.text}</span><span>{Math.round(loadingState.progress)}%</span>
-                                                    </div>
-                                                    <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
-                                                        <div className="bg-[#2f314b] h-3 rounded-full transition-all duration-300" style={{ width: `${loadingState.progress}%` }}></div>
-                                                    </div>
-                                                </div>
-                                            )}
-
-                                            <div className="bg-white border-2 border-gray-100 p-6 rounded-xl shadow-sm space-y-8">
-                                                {multiRoomData.map((room) => (
-                                                    <div key={room.id} className="bg-gray-50 p-6 rounded-xl border border-gray-200">
-                                                        <div className="flex flex-col sm:flex-row justify-between sm:items-center mb-4 border-b-2 border-gray-200 pb-2 gap-3">
-                                                            <h5 className="font-bold text-gray-800 text-xl">{room.name}</h5>
-                                                            <button onClick={() => analyseMultiRoomImages(room.id)} disabled={isAnalysingMain || room.images.length === 0} className="text-xs bg-[#2f314b] text-white px-4 py-2 rounded-lg font-bold hover:bg-[#2f314b]/90 transition shadow-sm disabled:opacity-50 disabled:cursor-not-allowed">
-                                                                Generate Report for this Room
-                                                            </button>
-                                                        </div>
-                                                        
-                                                        {/* Individual Room Drop Zone */}
-                                                        <div 
-                                                            className={`min-h-[100px] border-2 border-dashed rounded-xl mb-6 transition-colors ${room.images.length > 0 ? 'border-gray-300 bg-white p-4' : 'border-gray-400 bg-gray-100/50 flex items-center justify-center'}`}
-                                                            onDragOver={handleDragOver}
-                                                            onDrop={(e) => handleDrop(e, room.id)}
-                                                        >
-                                                            {room.images.length > 0 ? (
-                                                                <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-3">
-                                                                    {room.images.map((img, idx) => (
-                                                                        <div 
-                                                                            key={img.id} 
-                                                                            draggable
-                                                                            onDragStart={(e) => handleDragStart(e, img.id, room.id)}
-                                                                            className="relative group rounded-lg overflow-hidden border border-gray-300 shadow-sm cursor-move hover:ring-2 hover:ring-[#2f314b]"
-                                                                        >
-                                                                            <img src={img.data ? `data:${img.mimeType};base64,${img.data}` : img.url} className="w-full h-20 object-cover" />
-                                                                            <button onClick={() => handleRemoveMultiImage(room.id, img.id)} className="absolute inset-0 bg-red-600/90 text-white text-xs font-bold opacity-0 group-hover:opacity-100 transition flex items-center justify-center">Remove</button>
-                                                                            <div className="absolute bottom-0 left-0 right-0 bg-black/60 text-white text-[9px] font-bold uppercase text-center py-0.5">Image {idx + 1}</div>
-                                                                        </div>
-                                                                    ))}
-                                                                </div>
-                                                            ) : (
-                                                                <p className="text-sm font-bold text-gray-400">Drag photos here for {room.name}</p>
-                                                            )}
-                                                        </div>
-
-                                                        <div className="mt-4">
-                                                            <label className="text-sm font-bold text-gray-700 block mb-2 uppercase tracking-wide">
-                                                                {reportType === 'maintenance' ? 'Identified Issues:' : 'Room Report:'}
-                                                            </label>
-                                                            <textarea value={room.report} onChange={(e) => handleMultiReportChange(room.id, e.target.value)} className="w-full p-4 border-2 border-gray-200 rounded-xl text-sm bg-white focus:ring-[#2f314b] font-mono leading-relaxed" rows="5" placeholder="Upload images and run AI analysis, or type notes manually..." />
-                                                        </div>
-                                                    </div>
-                                                ))}
-
-                                                <div className="flex justify-end pt-4 border-t-2 border-gray-100">
-                                                    <button onClick={polishMultiRoomText} disabled={isPolishingMain} className="text-sm bg-[#2f314b]/10 text-[#2f314b] px-6 py-3 rounded-xl font-bold hover:bg-[#2f314b]/20 transition shadow-sm">
-                                                        {isPolishingMain ? 'Polishing...' : '✨ Polish All Texts Objectively'}
-                                                    </button>
-                                                </div>
-                                            </div>
-                                        </div>
-                                    )}
-
-                                    {/* Fire Safety Forms */}
-                                    {reportType === 'fire_safety' && (
-                                        <div className="bg-white border-2 border-gray-100 p-6 sm:p-8 rounded-xl shadow-sm">
-                                            <h3 className="text-xl font-bold text-gray-900 mb-6 border-b-2 border-gray-100 pb-2 uppercase tracking-wide">Fire Safety Equipment Checks</h3>
-                                            
-                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                                <AlarmSection title="Smoke Detectors" config={fireSafetyData.smoke} setConfig={(val) => setFireSafetyData(prev => ({ ...prev, smoke: val }))} />
-                                                <AlarmSection title="CO Alarms" config={fireSafetyData.co} setConfig={(val) => setFireSafetyData(prev => ({ ...prev, co: val }))} />
-                                                <AlarmSection title="Heat Detectors" config={fireSafetyData.heat} setConfig={(val) => setFireSafetyData(prev => ({ ...prev, heat: val }))} />
-                                                <AlarmSection title="Emergency Lighting" config={fireSafetyData.emergency} setConfig={(val) => setFireSafetyData(prev => ({ ...prev, emergency: val }))} hasDuration={true} />
-                                            </div>
-
-                                            <div className="bg-gray-50 p-6 rounded-xl border border-gray-200 my-8 shadow-sm">
-                                                <label className="block font-bold text-gray-900 mb-5 text-xl border-b-2 border-gray-200 pb-2">Were Faults Identified?</label>
-                                                <div className="flex space-x-8 mb-6">
-                                                    <label className="flex items-center space-x-3 cursor-pointer group">
-                                                        <input type="radio" name="hasFaults" checked={fireSafetyData.hasFaults === true} onChange={() => setFireSafetyData(prev => ({ ...prev, hasFaults: true }))} className="w-6 h-6 text-red-600 border-gray-400 focus:ring-red-600 transition" />
-                                                        <span className="font-bold text-gray-800 text-lg group-hover:text-red-600 transition">Yes</span>
-                                                    </label>
-                                                    <label className="flex items-center space-x-3 cursor-pointer group">
-                                                        <input type="radio" name="hasFaults" checked={fireSafetyData.hasFaults === false} onChange={() => setFireSafetyData(prev => ({ ...prev, hasFaults: false }))} className="w-6 h-6 text-green-600 border-gray-400 focus:ring-green-600 transition" />
-                                                        <span className="font-bold text-gray-800 text-lg group-hover:text-green-600 transition">No</span>
-                                                    </label>
-                                                </div>
-
-                                                {fireSafetyData.hasFaults && (
-                                                    <div className="space-y-6 pt-6 border-t-2 border-gray-200 animate-in fade-in">
-                                                        <div>
-                                                            <label className="block text-sm font-bold text-gray-800 mb-2 uppercase tracking-wide">Fault Details <span className="text-red-600">*</span></label>
-                                                            <textarea rows="3" required placeholder="Detail the faults found during testing." value={fireSafetyData.faults} onChange={(e) => setFireSafetyData(prev => ({ ...prev, faults: e.target.value }))} className="w-full border-2 border-gray-300 rounded-xl p-4 text-sm font-medium focus:ring-[#2f314b]" />
-                                                        </div>
-                                                        <div>
-                                                            <label className="block text-sm font-bold text-gray-800 mb-2 uppercase tracking-wide">Action Plan <span className="text-red-600">*</span></label>
-                                                            <textarea rows="2" required placeholder="What is the plan to resolve these faults?" value={fireSafetyData.actionPlan} onChange={(e) => setFireSafetyData(prev => ({ ...prev, actionPlan: e.target.value }))} className="w-full border-2 border-gray-300 rounded-xl p-4 text-sm font-medium focus:ring-[#2f314b]" />
-                                                        </div>
-                                                        <div className="pt-6 border-t-2 border-gray-200">
-                                                            <label className="flex items-center space-x-3 mb-5 cursor-pointer">
-                                                                <input type="checkbox" checked={fireSafetyData.isResolved} onChange={(e) => setFireSafetyData(prev => ({ ...prev, isResolved: e.target.checked }))} className="w-6 h-6 text-green-600 border-gray-400 rounded focus:ring-green-600" />
-                                                                <span className="font-bold text-gray-900 text-lg">Fault Resolved?</span>
-                                                            </label>
-                                                            {fireSafetyData.isResolved && (
-                                                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-white p-5 rounded-xl border border-gray-200 shadow-sm animate-in fade-in">
-                                                                    <div>
-                                                                        <label className="block text-sm font-bold text-gray-700 mb-2">Date and Time of Resolution <span className="text-red-600">*</span></label>
-                                                                        <input type="datetime-local" required value={fireSafetyData.resolvedDate} onChange={(e) => setFireSafetyData(prev => ({ ...prev, resolvedDate: e.target.value }))} className="w-full border border-gray-300 rounded-lg p-3 text-sm focus:ring-[#2f314b] font-medium" />
-                                                                    </div>
-                                                                    <div>
-                                                                        <label className="block text-sm font-bold text-gray-700 mb-2">Resolved By <span className="text-red-600">*</span></label>
-                                                                        <input type="text" required placeholder="Name of person who resolved it" value={fireSafetyData.resolvedBy} onChange={(e) => setFireSafetyData(prev => ({ ...prev, resolvedBy: e.target.value }))} className="w-full border border-gray-300 rounded-lg p-3 text-sm focus:ring-[#2f314b] font-medium" />
-                                                                    </div>
-                                                                </div>
-                                                            )}
-                                                        </div>
-                                                    </div>
-                                                )}
-                                            </div>
-
-                                            <SignaturePad initialData={fireSafetyData.signature} onSignatureEnd={(sig) => setFireSafetyData(prev => ({ ...prev, signature: sig }))} />
-                                        </div>
-                                    )}
-
-                                    <div className="flex justify-between items-center pt-6 border-t border-gray-200">
-                                        <button onClick={() => setStep(1)} className="text-gray-600 px-8 py-3 font-bold hover:bg-gray-100 rounded-xl transition">← Back</button>
-                                        <button onClick={() => setStep(3)} disabled={!canProceedToStep3} className="bg-[#2f314b] text-white px-10 py-4 rounded-xl font-bold shadow-md hover:bg-[#2f314b]/90 transition disabled:opacity-50 disabled:cursor-not-allowed text-lg">
-                                            Proceed to Final Review →
-                                        </button>
-                                    </div>
-                                    {!canProceedToStep3 && <p className="text-sm font-bold text-red-500 text-right mt-2">Ensure reports contain text or images before review.</p>}
-                                </div>
-                            )}
-
-                        </div>
-                    </>
-                )}
-
-                {/* ─── STEP 3: REVIEW / VIEW PDF PORTFOLIO REPORT ─── */}
-                {(currentView === 'wizard' && step === 3) || currentView === 'view' ? (
-                    <div className="p-6 sm:p-8 bg-gray-50 border-t border-gray-200">
-                        {pdfFallbackMsg && (
-                            <div className="p-4 bg-amber-50 text-amber-800 rounded-xl text-sm border-2 border-amber-200 print:hidden mb-6 font-bold">{pdfFallbackMsg}</div>
-                        )}
-
-                        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 print:hidden mb-8">
-                            {currentView === 'wizard' ? (
-                                <>
-                                    <button onClick={() => setStep(2)} disabled={isProcessing} className="text-gray-600 px-6 py-3 font-bold hover:bg-gray-200 rounded-xl transition disabled:opacity-50">← Back to Editor</button>
-                                    <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
-                                        <button onClick={handleSaveReportToPortfolio} disabled={isProcessing} className="bg-green-600 text-white px-6 py-3 rounded-xl font-bold shadow hover:bg-green-700 transition disabled:opacity-50 flex-1 sm:flex-none text-center">
-                                            {isProcessing ? 'Saving...' : '💾 Save to Portfolio'}
-                                        </button>
-                                        <button onClick={handleDownloadPDFWrapper} disabled={isProcessing} className="bg-[#2f314b] text-white px-8 py-3 rounded-xl font-bold shadow hover:bg-[#2f314b]/90 transition disabled:opacity-50 flex-1 sm:flex-none text-center">
-                                            {isProcessing ? 'Generating...' : 'Download PDF'}
-                                        </button>
-                                    </div>
-                                </>
-                            ) : (
-                                <>
-                                    <button onClick={goPortfolio} disabled={isProcessing} className="text-gray-600 px-6 py-3 font-bold hover:bg-gray-200 rounded-xl transition disabled:opacity-50">← Back to Portfolio</button>
-                                    <button onClick={handleDownloadPDFWrapper} disabled={isProcessing} className="bg-[#2f314b] text-white px-8 py-3 rounded-xl font-bold shadow hover:bg-[#2f314b]/90 transition disabled:opacity-50 w-full sm:w-auto text-center">
-                                        {isProcessing ? 'Generating...' : 'Download PDF'}
-                                    </button>
-                                </>
-                            )}
-                        </div>
-
-                        {/* PRINTABLE PDF AREA - All fonts completely pixel-locked for PDF */}
-                        <div className="bg-white p-10 print:p-0 max-w-[210mm] mx-auto shadow-lg border border-gray-200 text-gray-900" id="printable-report" style={{ fontFamily: "Arial, sans-serif" }}>
-
-                            {/* Single Room Inventory / Checkout PDF Layout */}
-                            {!isMultiRoom && (reportType === 'inventory' || reportType === 'checkout') && (
-                                <>
-                                    <div className="mb-8 text-center flex flex-col items-center border-b-2 border-gray-100 pb-6">
-                                        <img src={logoSrc} alt="Arlington Park" crossOrigin="anonymous" style={{ height: '72px' }} className="mb-4 object-contain" />
-                                        <h2 className="text-[18px] font-black uppercase tracking-widest text-[#2f314b]">
-                                            {reportType === 'checkout' ? 'Check-Out Report & Schedule of Condition' : 'Property Inventory & Schedule of Condition'}
-                                        </h2>
-                                    </div>
-
-                                    <div className="grid grid-cols-1 gap-2 mb-8 text-[12px] bg-gray-50 p-4 rounded-lg border border-gray-200">
-                                        <div className="flex"><span className="w-48 font-bold text-gray-600 uppercase tracking-wide">Property Address:</span><span className="font-bold">{tenancyInfo.roomIdentifier ? `${tenancyInfo.roomIdentifier}, ` : ''}{currentProperty?.address || ''}</span></div>
-                                        <div className="flex"><span className="w-48 font-bold text-gray-600 uppercase tracking-wide">Tenant Name:</span> <span className="font-medium">{tenancyInfo.tenantName || ''}</span></div>
-                                        <div className="flex"><span className="w-48 font-bold text-gray-600 uppercase tracking-wide">{reportType === 'checkout' ? 'Check-out Date:' : 'Move-in Date:'}</span> <span className="font-medium">{formatOrdinalDate(reportType === 'checkout' ? tenancyInfo.checkOutDate : tenancyInfo.moveInDate)}</span></div>
-                                        <div className="flex"><span className="w-48 font-bold text-gray-600 uppercase tracking-wide">Inspection Date:</span> <span className="font-medium">{formatOrdinalDate(tenancyInfo.dateOfInventory)}</span></div>
-                                        <div className="flex"><span className="w-48 font-bold text-gray-600 uppercase tracking-wide">Inspected By:</span> <span className="font-medium">{tenancyInfo.clerkName || ''}</span></div>
-                                    </div>
-
-                                    <div className="mb-10 text-[12px]">
-                                        {renderReportText(mainReport)}
-                                    </div>
-
-                                    <div className="mt-8 break-inside-avoid bg-gray-50 p-6 rounded-lg border border-gray-200">
-                                        <h3 className="text-[14px] font-black mb-4 uppercase tracking-wide border-b border-gray-300 pb-2">Declaration</h3>
-                                        <p className="text-[12px] mb-8 font-medium">This report is a fair and accurate representation of the property at the time of inspection.</p>
-                                        <div className="space-y-5 text-[12px]">
-                                            <p><strong className="uppercase text-gray-600 mr-2">Signed (Agent):</strong> <span className="border-b border-black inline-block w-64 pb-1">{tenancyInfo.clerkName || ''}</span></p>
-                                            <p><strong className="uppercase text-gray-600 mr-2">Date:</strong> <span className="border-b border-black inline-block w-64 pb-1">{formatOrdinalDate(tenancyInfo.dateOfInventory) || ''}</span></p>
-                                        </div>
-                                    </div>
-
-                                    {mainImages.length > 0 && (
-                                        <div className="html2pdf__page-break w-full mt-10 pt-8 border-t-4 border-gray-800" style={{ fontSize: 0 }}>
-                                            <h3 className="text-[16px] font-black mb-6 uppercase tracking-widest text-center bg-gray-100 py-2 border border-gray-200" style={{ fontSize: '16px' }}>Photographic Evidence</h3>
-                                            <div className="block w-full">
-                                                {mainImages.map((img, idx) => (
-                                                    <div key={img.id} className="break-inside-avoid inline-block align-top mb-6" style={{ width: '31%', marginRight: idx % 3 === 2 ? '0' : '3.5%', fontSize: '12px' }}>
-                                                        <div className="bg-gray-100 p-1 border border-gray-300 border-b-0 rounded-t-lg">
-                                                            <p className="text-[10px] font-bold text-gray-700 uppercase tracking-wider text-center">
-                                                                Image {idx + 1}
-                                                            </p>
-                                                            {img.room && <p className="text-[10px] text-gray-500 font-bold text-center truncate px-1" title={img.room}>{img.room}</p>}
-                                                        </div>
-                                                        <img src={img.data ? `data:${img.mimeType};base64,${img.data}` : img.url} className="w-full h-40 object-cover rounded-b-lg shadow-sm border border-gray-300 border-t-0" />
-                                                    </div>
-                                                ))}
-                                            </div>
-                                        </div>
-                                    )}
-                                </>
-                            )}
-
-                            {/* Multi-Room PDF Layout (Maintenance OR Full Property Checkout) */}
-                            {isMultiRoom && (
-                                <>
-                                    <div className="mb-8 text-center flex flex-col items-center border-b-2 border-gray-100 pb-6">
-                                        <img src={logoSrc} alt="Arlington Park" crossOrigin="anonymous" style={{ height: '72px' }} className="mb-4 object-contain" />
-                                        <h2 className="text-[18px] font-black uppercase tracking-widest text-[#2f314b]">
-                                            {reportType === 'maintenance' ? 'Property Maintenance Schedule' : 'Check-Out Report & Schedule of Condition'}
-                                        </h2>
-                                        {reportType === 'checkout' && <p className="text-gray-500 font-bold text-[11px] uppercase tracking-widest mt-1">Full Property Scope</p>}
-                                    </div>
-
-                                    <div className="grid grid-cols-1 gap-2 mb-10 text-[12px] bg-gray-50 p-4 rounded-lg border border-gray-200">
-                                        <div className="flex"><span className="w-48 font-bold text-gray-600 uppercase tracking-wide">Property Address:</span> <span className="font-bold">{currentProperty?.address}</span></div>
-                                        {reportType === 'checkout' && (
-                                            <>
-                                                <div className="flex"><span className="w-48 font-bold text-gray-600 uppercase tracking-wide">Tenant Name:</span> <span className="font-medium">{tenancyInfo.tenantName || ''}</span></div>
-                                                <div className="flex"><span className="w-48 font-bold text-gray-600 uppercase tracking-wide">Check-out Date:</span> <span className="font-medium">{formatOrdinalDate(tenancyInfo.checkOutDate)}</span></div>
-                                            </>
-                                        )}
-                                        <div className="flex"><span className="w-48 font-bold text-gray-600 uppercase tracking-wide">Inspection Date:</span> <span className="font-medium">{formatOrdinalDate(reportType === 'checkout' ? tenancyInfo.dateOfInventory : maintenanceMeta.date)}</span></div>
-                                        <div className="flex"><span className="w-48 font-bold text-gray-600 uppercase tracking-wide">Inspected By:</span> <span className="font-medium">{reportType === 'checkout' ? tenancyInfo.clerkName : maintenanceMeta.clerkName || ''}</span></div>
-                                    </div>
-
-                                    <div className="border-l-4 border-[#2f314b] pl-6 space-y-10">
-                                        {multiRoomData.map((room) => (
-                                            <div key={room.id} className="break-inside-avoid border border-gray-200 rounded-lg p-5 bg-white shadow-sm">
-                                                <h4 className="text-[16px] font-black mb-4 uppercase tracking-wide text-[#2f314b] border-b border-gray-100 pb-2">{room.name}</h4>
-                                                
-                                                {room.report && (
-                                                    <div className="mb-6 text-[12px] bg-gray-50 p-4 rounded border border-gray-100">
-                                                        {renderReportText(room.report)}
-                                                    </div>
-                                                )}
-
-                                                {room.images.length > 0 && (
-                                                    <div className="block w-full mt-4" style={{ fontSize: 0 }}>
-                                                        <h5 className="text-[12px] font-bold uppercase tracking-wide text-gray-500 mb-3">Evidence</h5>
-                                                        {room.images.map((img, iIdx) => (
-                                                            <div key={img.id} className="break-inside-avoid inline-block align-top mb-4" style={{ width: '31%', marginRight: iIdx % 3 === 2 ? '0' : '3.5%', fontSize: '12px' }}>
-                                                                <p className="text-[10px] font-bold mb-1 text-gray-500 uppercase tracking-wider text-center bg-gray-100 py-1 rounded-t border border-gray-300 border-b-0">Image {iIdx + 1}</p>
-                                                                <img src={img.data ? `data:${img.mimeType};base64,${img.data}` : img.url} className="w-full h-32 object-cover rounded-b shadow-sm border border-gray-300" />
-                                                            </div>
-                                                        ))}
-                                                    </div>
-                                                )}
-                                            </div>
-                                        ))}
-                                    </div>
-
-                                    {reportType === 'checkout' && (
-                                        <div className="mt-8 break-inside-avoid bg-gray-50 p-6 rounded-lg border border-gray-200">
-                                            <h3 className="text-[14px] font-black mb-4 uppercase tracking-wide border-b border-gray-300 pb-2">Declaration</h3>
-                                            <p className="text-[12px] mb-8 font-medium">This report is a fair and accurate representation of the property at the time of inspection.</p>
-                                            <div className="space-y-5 text-[12px]">
-                                                <p><strong className="uppercase text-gray-600 mr-2">Signed (Agent):</strong> <span className="border-b border-black inline-block w-64 pb-1">{tenancyInfo.clerkName || ''}</span></p>
-                                                <p><strong className="uppercase text-gray-600 mr-2">Date:</strong> <span className="border-b border-black inline-block w-64 pb-1">{formatOrdinalDate(tenancyInfo.dateOfInventory) || ''}</span></p>
-                                            </div>
-                                        </div>
-                                    )}
-                                </>
-                            )}
-
-                            {/* Fire Safety PDF Layout */}
-                            {reportType === 'fire_safety' && (
-                                <>
-                                    <div className="mb-6 text-center flex flex-col items-center border-b-2 border-red-600 pb-6">
-                                        <img src={logoSrc} alt="Arlington Park Logo" crossOrigin="anonymous" style={{ height: '60px' }} className="mb-3 object-contain" />
-                                        <h2 className="text-[20px] font-black uppercase tracking-widest text-[#2f314b]">Fire Safety Inspection</h2>
-                                        <p className="text-gray-500 font-bold text-[11px] uppercase tracking-widest mt-1">Official Record of Testing</p>
-                                    </div>
-
-                                    <div className="flex gap-4 mb-8 text-[12px]">
-                                        <div className="flex-1 border border-gray-300 p-5 rounded-lg bg-gray-50 shadow-sm">
-                                            <h3 className="text-[10px] text-gray-500 uppercase font-black tracking-widest mb-3 border-b border-gray-200 pb-1">Property Details</h3>
-                                            <p className="font-bold text-[14px] leading-relaxed">{currentProperty?.address}</p>
-                                        </div>
-                                        <div className="flex-1 border border-gray-300 p-5 rounded-lg bg-gray-50 shadow-sm">
-                                            <h3 className="text-[10px] text-gray-500 uppercase font-black tracking-widest mb-3 border-b border-gray-200 pb-1">Inspection Details</h3>
-                                            <p className="mb-2"><strong className="text-gray-700 uppercase text-[10px]">Date of Test:</strong> <span className="ml-2 font-medium">{formatOrdinalDate(tenancyInfo.dateOfInventory)}</span></p>
-                                            <p><strong className="text-gray-700 uppercase text-[10px]">Inspector:</strong> <span className="ml-2 font-medium">{tenancyInfo.clerkName || 'Not specified'}</span></p>
-                                        </div>
-                                    </div>
-
-                                    <h3 className="text-[13px] font-black uppercase tracking-widest border-b-2 border-black pb-1 mb-4 text-[#2f314b]">Equipment Testing Log</h3>
-                                    <table className="w-full mb-10 text-[12px] text-left border-collapse border border-gray-300 shadow-sm">
-                                        <thead className="bg-[#2f314b] text-white">
-                                            <tr>
-                                                <th className="p-3 font-bold uppercase tracking-wider text-[10px] w-1/4">Equipment Type</th>
-                                                <th className="p-3 font-bold uppercase tracking-wider text-[10px] text-center w-1/6">Status</th>
-                                                <th className="p-3 font-bold uppercase tracking-wider text-[10px] text-center w-1/6">Quantity</th>
-                                                <th className="p-3 font-bold uppercase tracking-wider text-[10px] w-1/4">Location</th>
-                                                <th className="p-3 font-bold uppercase tracking-wider text-[10px] w-1/6">Duration</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            <AlarmRow title="Smoke Detectors" config={fireSafetyData.smoke} />
-                                            <AlarmRow title="CO Alarms" config={fireSafetyData.co} />
-                                            <AlarmRow title="Heat Detectors" config={fireSafetyData.heat} />
-                                            <AlarmRow title="Emergency Lighting" config={fireSafetyData.emergency} />
-                                        </tbody>
-                                    </table>
-
-                                    <h3 className="text-[13px] font-black uppercase tracking-widest border-b-2 border-black pb-1 mb-4 text-[#2f314b]">Faults & Remedial Action</h3>
-                                    <div className={`p-6 mb-10 rounded-lg text-[12px] border-2 shadow-sm ${fireSafetyData.hasFaults ? 'border-red-500 bg-red-50' : 'border-green-500 bg-green-50'}`}>
-                                        {fireSafetyData.hasFaults ? (
-                                            <div className="flex gap-6">
-                                                <div className="flex-1 border-r-2 border-red-200 pr-6">
-                                                    <p className="font-black text-red-600 uppercase tracking-widest text-[11px] mb-2 border-b border-red-200 pb-1">Identified Faults</p>
-                                                    <p className="mb-6 font-medium leading-relaxed">{fireSafetyData.faults}</p>
-                                                    
-                                                    <p className="font-black text-red-600 uppercase tracking-widest text-[11px] mb-2 border-b border-red-200 pb-1">Action Plan</p>
-                                                    <p className="font-medium leading-relaxed">{fireSafetyData.actionPlan || 'Not specified'}</p>
-                                                </div>
-                                                <div className="flex-1 pl-2">
-                                                    <p className="font-black text-gray-800 uppercase tracking-widest text-[11px] mb-2 border-b border-gray-300 pb-1">Resolution Status</p>
-                                                    {fireSafetyData.isResolved ? (
-                                                        <div className="bg-white p-4 rounded border border-green-200 shadow-sm mt-3">
-                                                            <p className="font-black text-green-600 text-[14px] uppercase tracking-widest mb-3">✓ RESOLVED</p>
-                                                            <p className="text-gray-800 mb-2"><strong className="uppercase text-[10px] text-gray-500">Date:</strong> <span className="font-medium ml-2">{formatOrdinalDateTime(fireSafetyData.resolvedDate)}</span></p>
-                                                            <p className="text-gray-800"><strong className="uppercase text-[10px] text-gray-500">By:</strong> <span className="font-medium ml-2">{fireSafetyData.resolvedBy}</span></p>
-                                                        </div>
-                                                    ) : (
-                                                        <div className="bg-white p-4 rounded border border-red-200 shadow-sm mt-3">
-                                                            <p className="text-red-600 font-black text-[14px] uppercase tracking-widest">⚠ ACTION REQUIRED</p>
-                                                            <p className="text-xs font-medium text-red-400 mt-1 uppercase">Fault remains unresolved</p>
-                                                        </div>
-                                                    )}
-                                                </div>
-                                            </div>
-                                        ) : (
-                                            <div className="flex items-center justify-center py-4">
-                                                <span className="text-2xl mr-3">✓</span>
-                                                <p className="font-black text-green-700 text-[14px] uppercase tracking-widest m-0">No faults identified. Property is compliant.</p>
-                                            </div>
-                                        )}
-                                    </div>
-
-                                    <div className="flex justify-end mt-12 break-inside-avoid">
-                                        <div className="w-72 border-2 border-gray-300 rounded-lg p-5 bg-white shadow-sm">
-                                            <p className="text-[10px] text-gray-500 font-black uppercase tracking-widest border-b-2 border-gray-200 pb-2 mb-4 text-center">Authorized Sign-off</p>
-                                            <div className="h-16 flex items-center justify-center mb-4 bg-gray-50 rounded border border-dashed border-gray-300">
-                                                {fireSafetyData.signature ? (
-                                                    <img src={fireSafetyData.signature} className="max-h-full max-w-full mix-blend-multiply" alt="Signature" crossOrigin="anonymous" />
-                                                ) : (
-                                                    <span className="text-gray-400 italic text-[10px] font-bold">No signature provided</span>
-                                                )}
-                                            </div>
-                                            <p className="text-center font-black text-[14px] uppercase tracking-wide text-[#2f314b]">{tenancyInfo.clerkName || 'Inspector'}</p>
-                                        </div>
-                                    </div>
-                                </>
-                            )}
-
-                        </div>
-                    </div>
-                ) : null}
-
-            </div>
-
-            <footer className="max-w-4xl mx-auto mt-8 text-center print:hidden pb-8">
-                <div className="text-xs font-bold text-gray-500 mb-3 px-4 text-balance uppercase tracking-widest">
-                    &copy; {new Date().getFullYear()} Luke Martin - Arlington Park Lettings & Estate Agents <br/> 25a Earlham Rd, Norwich NR2 3AD{' '}
-                    <br/><a href="https://arlingtonpark.co.uk" target="_blank" rel="noopener noreferrer" className="hover:text-[#2f314b] underline transition mt-1 inline-block">arlingtonpark.co.uk</a>
-                </div>
-                <button onClick={() => setShowApiSettings(true)} className="text-[10px] font-bold text-gray-400 hover:text-gray-600 underline transition uppercase tracking-widest">
-                    AI API Settings
-                </button>
-            </footer>
-
-            {showApiSettings && (
-                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 print:hidden p-4 transition-opacity" onClick={handleModalBackdropClick}>
-                    <div className="bg-white p-8 rounded-2xl shadow-2xl max-w-md w-full border border-gray-200 animate-in zoom-in-95">
-                        <h3 className="text-xl font-black text-gray-900 mb-6 border-b-2 border-gray-100 pb-2">API Configuration</h3>
-                        <input
-                            type="password"
-                            value={activeApiKey}
-                            onChange={handleApiChange}
-                            placeholder="Gemini API Key..."
-                            autoComplete="off"
-                            className="w-full p-3 text-sm border-2 border-gray-200 rounded-xl focus:ring-[#2f314b] focus:border-[#2f314b] mb-4 font-medium transition"
-                        />
-                        <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 mb-6">
-                            <p className="text-[11px] font-bold text-blue-800 uppercase tracking-wide mb-1">Cloud Storage Active</p>
-                            <p className="text-[11px] font-medium text-blue-600 leading-relaxed">Your API key is saved to your browser's local storage. Property reports and data are saved securely to your Firebase Firestore database.</p>
-                        </div>
-                        <div className="flex justify-end">
-                            <button onClick={() => setShowApiSettings(false)} className="bg-[#2f314b] text-white px-8 py-3 rounded-xl font-bold hover:bg-[#2f314b]/90 transition shadow-md">
-                                Done
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
-        </div>
-    );
-}
+                                                    <input type="file" multiple accept="image/*" onChange={handleBulkImageUpload} className="block w-full text-sm text-gray-500 file:mr-6 file:py-3 file:px-6 file:rounded-lg file:border-0 file:text-sm file:font-bold file:bg-[#2f314b] file:text-white hover:file:bg-[#2f3
