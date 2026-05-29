@@ -494,6 +494,9 @@ export default function App() {
         setCurrentView('view');
     };
 
+    // -------------------------------------------------------------
+    // FIX: Refined Save logic with step-by-step progress updating
+    // -------------------------------------------------------------
     const handleSaveReportToPortfolio = async () => {
         setIsProcessing(true);
         setErrorMsg('');
@@ -511,21 +514,31 @@ export default function App() {
         const reportId = newId();
 
         try {
-            setLoadingState({ active: true, progress: 10, text: 'Uploading images...' });
+            setLoadingState({ active: true, progress: 5, text: 'Preparing to save...' });
 
             const mainImagesUploaded = [];
+            
+            // Calculate total images that actually need uploading (have base64 data)
+            const totalImagesToUpload = 
+                mainImages.filter(img => img.data).length + 
+                multiRoomData.reduce((acc, room) => acc + room.images.filter(img => img.data).length, 0);
+            let processedCount = 0;
+
             for (const img of mainImages) {
                 if (!img.data) {
                     mainImagesUploaded.push(img);
                     continue;
                 }
                 try {
+                    setLoadingState(prev => ({ ...prev, text: `Uploading images (${processedCount + 1}/${totalImagesToUpload})...` }));
                     const url = await uploadImageToStorage(reportId, img.id, img.mimeType, img.data);
                     mainImagesUploaded.push({ ...img, data: '', url });
                 } catch (e) {
                     console.error("Failed to upload image:", img.id, e);
                     mainImagesUploaded.push({ ...img, data: '' }); 
                 }
+                processedCount++;
+                setLoadingState(prev => ({ ...prev, progress: 5 + (processedCount / Math.max(1, totalImagesToUpload)) * 75 }));
             }
 
             const multiRoomDataUploaded = [];
@@ -537,17 +550,20 @@ export default function App() {
                         continue;
                     }
                     try {
+                        setLoadingState(prev => ({ ...prev, text: `Uploading images (${processedCount + 1}/${totalImagesToUpload})...` }));
                         const url = await uploadImageToStorage(reportId, img.id, img.mimeType, img.data);
                         uploadedImages.push({ ...img, data: '', url });
                     } catch (e) {
                         console.error("Failed to upload multi-room image:", img.id, e);
                         uploadedImages.push({ ...img, data: '' });
                     }
+                    processedCount++;
+                    setLoadingState(prev => ({ ...prev, progress: 5 + (processedCount / Math.max(1, totalImagesToUpload)) * 75 }));
                 }
                 multiRoomDataUploaded.push({ ...room, images: uploadedImages });
             }
 
-            setLoadingState({ active: true, progress: 80, text: 'Saving report...' });
+            setLoadingState({ active: true, progress: 85, text: 'Writing report to database...' });
           
             const reportData = {
                 id: reportId,
@@ -559,13 +575,25 @@ export default function App() {
                 data: { tenancyInfo, mainImages: mainImagesUploaded, mainReport, maintenanceMeta, multiRoomData: multiRoomDataUploaded, fireSafetyData }
             };
 
+            // This will throw if Firestore rejects it (e.g., Security Rules or Network failure)
             await dbPut(STORE_REPORTS, reportData);
-            setLoadingState({ active: true, progress: 100, text: 'Saved!' });
-            setTimeout(() => setLoadingState({ active: false, progress: 0, text: '' }), 1000);
+            
+            setLoadingState({ active: true, progress: 100, text: 'Saved successfully!' });
+            
+            // Allow user to see "Saved successfully!" for 800ms before navigating
+            await new Promise(resolve => setTimeout(resolve, 800));
+            setLoadingState({ active: false, progress: 0, text: '' });
             await goPortfolio();
+            
         } catch (err) {
-            console.error(err);
-            setErrorMsg("Failed to save report. Check your connection and try again.");
+            console.error("Full Save Error Context:", err);
+            let userError = "Failed to save report. Please check your connection.";
+            if (err.message?.includes("Missing or insufficient permissions")) {
+                userError = "Permission Denied: Your Firebase Database security rules are blocking the save. Check your Firestore Rules.";
+            } else if (err.message) {
+                userError = `Save Error: ${err.message}`;
+            }
+            setErrorMsg(userError);
             setLoadingState({ active: false, progress: 0, text: '' });
         } finally {
             setIsProcessing(false);
@@ -1738,6 +1766,26 @@ Condition: [Detailed Condition Only]
                     <div className="p-6 sm:p-8 bg-gray-50 border-t border-gray-200">
                         {pdfFallbackMsg && (
                             <div className="p-4 bg-amber-50 text-amber-800 rounded-xl text-sm border-2 border-amber-200 print:hidden mb-6 font-bold">{pdfFallbackMsg}</div>
+                        )}
+                        
+                        {/* -------------------------------------------------------------
+                            FIX: Rendering Error Messages and Progress inside Step 3 
+                            ------------------------------------------------------------- */}
+                        {loadingState.active && (
+                            <div className="bg-[#2f314b]/5 p-5 rounded-xl border border-[#2f314b]/10 mb-6 print:hidden animate-in fade-in">
+                                <div className="flex justify-between text-sm text-[#2f314b] font-bold mb-3 uppercase tracking-wider">
+                                    <span>{loadingState.text}</span><span>{Math.round(loadingState.progress)}%</span>
+                                </div>
+                                <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
+                                    <div className="bg-[#2f314b] h-3 rounded-full transition-all duration-300" style={{ width: `${loadingState.progress}%` }}></div>
+                                </div>
+                            </div>
+                        )}
+
+                        {errorMsg && (
+                            <div className="p-4 bg-red-50 text-red-700 rounded-xl text-sm border-2 border-red-200 mb-6 print:hidden font-bold">
+                                {errorMsg}
+                            </div>
                         )}
 
                         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 print:hidden mb-8">
