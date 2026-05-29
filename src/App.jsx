@@ -35,9 +35,9 @@ const app = initializeApp(firebaseConfig);
 const firestoreDb = getFirestore(app);
 const storage = getStorage(app);
 
-// Keep your existing store constants
 const STORE_PROPS = 'properties';
 const STORE_REPORTS = 'reports';
+
 // --- API Configuration ---
 const getEnvKey = () => {
     try {
@@ -122,10 +122,6 @@ const LOGO_URL = "https://i.ibb.co/N6Z7PwWc/Arlington-large-20251119-124957-0000
 let _idCounter = 0;
 const newId = () => `id-${Date.now()}-${++_idCounter}`;
 
-// --- Native Browser Database (IndexedDB) ---
-const DB_NAME = 'ArlingtonDB';
-const DB_VERSION = 1;
-
 // --- Firebase Firestore Database ---
 
 const dbGetAll = async (storeName) => {
@@ -164,7 +160,6 @@ const dbGetReport = async (id) => {
 
 // --- Firebase Storage Helpers ---
 
-// Upload a single base64 image to Storage, returns its download URL
 const uploadImageToStorage = async (reportId, imageId, mimeType, base64Data) => {
     const path = `reports/${reportId}/${imageId}`;
     const imageRef = ref(storage, path);
@@ -173,14 +168,12 @@ const uploadImageToStorage = async (reportId, imageId, mimeType, base64Data) => 
     return await getDownloadURL(imageRef);
 };
 
-// Delete all images stored under a report's folder
 const deleteReportImages = async (reportId) => {
     try {
         const folderRef = ref(storage, `reports/${reportId}`);
         const listResult = await listAll(folderRef);
         await Promise.all(listResult.items.map(itemRef => deleteObject(itemRef)));
     } catch (e) {
-        // Folder may not exist if report had no images — safe to ignore
         console.warn("Could not delete storage images for report:", reportId, e.message);
     }
 };
@@ -298,7 +291,7 @@ const AlarmRow = ({ title, config }) => {
 
 export default function App() {
     // Top Level Navigation States
-    const [currentView, setCurrentView] = useState('home'); // 'home', 'portfolio', 'wizard', 'view'
+    const [currentView, setCurrentView] = useState('home'); 
     
     // Database Cache States
     const [properties, setProperties] = useState([]);
@@ -323,9 +316,10 @@ export default function App() {
     const [mainImages, setMainImages] = useState([]);   
     const [mainReport, setMainReport] = useState('');
     
-    // Multi-Room Data Arrays (Maintenance & Full Property Checkout)
+    // Multi-Room Data Arrays
     const [maintenanceMeta, setMaintenanceMeta] = useState({ date: '', clerkName: '' });
     const [multiRoomData, setMultiRoomData] = useState([{ id: newId(), name: '', images: [], report: '' }]);
+    const [uncategorisedImages, setUncategorisedImages] = useState([]); // Added state for bulk uploads
 
     // Fire Safety Data Arrays
     const [fireSafetyData, setFireSafetyData] = useState({
@@ -385,9 +379,9 @@ export default function App() {
         };
         img.src = LOGO_URL;
     }, []);
-// Sync browser back history with app views
+
+  // Sync browser back history with app views
   useEffect(() => {
-    // Only push state if the current history state is different to avoid duplicate loops
     if (!window.history.state || window.history.state.view !== currentView || window.history.state.step !== step) {
       window.history.pushState({ view: currentView, step: step }, "");
     }
@@ -398,13 +392,11 @@ export default function App() {
       if (event.state) {
         const { view, step: targetStep } = event.state;
         
-        // Handle moving backward through wizard steps
         if (currentView === 'wizard' && view === 'wizard') {
           if (step > targetStep) {
             setStep(targetStep);
           }
         } else {
-          // Handle moving backward between high level views
           if (view === 'portfolio' && selectedPropertyId) {
             const reports = await dbGetReportsByProperty(selectedPropertyId);
             setPropertyReports(reports.sort((a,b) => new Date(b.reportDate) - new Date(a.reportDate)));
@@ -482,11 +474,11 @@ export default function App() {
         const report = await dbGetReport(id);
         setReportType(report.reportType);
         setTenancyInfo(report.data.tenancyInfo || {});
-        // Images saved with Storage URL in the `url` field; `data` will be empty for saved reports
         setMainImages(report.data.mainImages || []);
         setMainReport(report.data.mainReport || '');
         setMaintenanceMeta(report.data.maintenanceMeta || { date: '', clerkName: '' });
         setMultiRoomData(report.data.multiRoomData || [{ id: newId(), name: '', images: [], report: '' }]);
+        setUncategorisedImages([]);
         setFireSafetyData(report.data.fireSafetyData || {});
         
         setSelectedReportId(id);
@@ -511,46 +503,43 @@ export default function App() {
         const reportId = newId();
 
         try {
-            // Upload mainImages to Firebase Storage and replace base64 data with download URLs
-       setLoadingState({ active: true, progress: 10, text: 'Uploading images...' });
+            setLoadingState({ active: true, progress: 10, text: 'Uploading images...' });
 
-// 1. Process main images sequentially
-const mainImagesUploaded = [];
-for (const img of mainImages) {
-    if (!img.data) {
-        mainImagesUploaded.push(img);
-        continue;
-    }
-    try {
-        const url = await uploadImageToStorage(reportId, img.id, img.mimeType, img.data);
-        mainImagesUploaded.push({ ...img, data: '', url });
-    } catch (e) {
-        console.error("Failed to upload image:", img.id, e);
-        mainImagesUploaded.push({ ...img, data: '' }); 
-    }
-}
+            const mainImagesUploaded = [];
+            for (const img of mainImages) {
+                if (!img.data) {
+                    mainImagesUploaded.push(img);
+                    continue;
+                }
+                try {
+                    const url = await uploadImageToStorage(reportId, img.id, img.mimeType, img.data);
+                    mainImagesUploaded.push({ ...img, data: '', url });
+                } catch (e) {
+                    console.error("Failed to upload image:", img.id, e);
+                    mainImagesUploaded.push({ ...img, data: '' }); 
+                }
+            }
 
-// 2. Process multi-room images sequentially
-const multiRoomDataUploaded = [];
-for (const room of multiRoomData) {
-    const uploadedImages = [];
-    for (const img of room.images) {
-        if (!img.data) {
-            uploadedImages.push(img);
-            continue;
-        }
-        try {
-            const url = await uploadImageToStorage(reportId, img.id, img.mimeType, img.data);
-            uploadedImages.push({ ...img, data: '', url });
-        } catch (e) {
-            console.error("Failed to upload multi-room image:", img.id, e);
-            uploadedImages.push({ ...img, data: '' });
-        }
-    }
-    multiRoomDataUploaded.push({ ...room, images: uploadedImages });
-}
+            const multiRoomDataUploaded = [];
+            for (const room of multiRoomData) {
+                const uploadedImages = [];
+                for (const img of room.images) {
+                    if (!img.data) {
+                        uploadedImages.push(img);
+                        continue;
+                    }
+                    try {
+                        const url = await uploadImageToStorage(reportId, img.id, img.mimeType, img.data);
+                        uploadedImages.push({ ...img, data: '', url });
+                    } catch (e) {
+                        console.error("Failed to upload multi-room image:", img.id, e);
+                        uploadedImages.push({ ...img, data: '' });
+                    }
+                }
+                multiRoomDataUploaded.push({ ...room, images: uploadedImages });
+            }
 
-setLoadingState({ active: true, progress: 80, text: 'Saving report...' });
+            setLoadingState({ active: true, progress: 80, text: 'Saving report...' });
           
             const reportData = {
                 id: reportId,
@@ -577,7 +566,7 @@ setLoadingState({ active: true, progress: 80, text: 'Saving report...' });
 
     const handleDeleteReport = async (id) => {
         if (window.confirm("Delete this report permanently?")) {
-            await deleteReportImages(id); // remove images from Firebase Storage
+            await deleteReportImages(id);
             await dbDelete(STORE_REPORTS, id);
             const reports = await dbGetReportsByProperty(selectedPropertyId);
             setPropertyReports(reports.sort((a,b) => new Date(b.reportDate) - new Date(a.reportDate)));
@@ -588,6 +577,7 @@ setLoadingState({ active: true, progress: 80, text: 'Saving report...' });
         setReportType(null);
         setMainReport('');
         setMainImages([]);
+        setUncategorisedImages([]);
         setTenancyInfo({ roomIdentifier: '', tenantName: '', moveInDate: '', checkOutDate: '', dateOfInventory: '', clerkName: '', hasEnsuite: false, checkoutScope: 'room' });
         setMaintenanceMeta({ date: '', clerkName: '' });
         setMultiRoomData([{ id: newId(), name: '', images: [], report: '' }]);
@@ -614,11 +604,20 @@ setLoadingState({ active: true, progress: 80, text: 'Saving report...' });
 
     // --- Multi-Room Structure Handlers ---
     const addMultiRoom = () => setMultiRoomData(prev => [...prev, { id: newId(), name: '', images: [], report: '' }]);
-    const removeMultiRoom = (rId) => setMultiRoomData(prev => prev.filter(r => r.id !== rId));
+    const removeMultiRoom = (rId) => {
+        setMultiRoomData(prev => {
+            const roomToDelete = prev.find(r => r.id === rId);
+            if (roomToDelete && roomToDelete.images.length > 0) {
+                // Rescue images back to the uncategorised pool
+                setUncategorisedImages(existing => [...existing, ...roomToDelete.images]);
+            }
+            return prev.filter(r => r.id !== rId);
+        });
+    };
     const updateMultiRoomName = (rId, val) => setMultiRoomData(prev => prev.map(r => r.id === rId ? { ...r, name: val } : r));
     const handleMultiReportChange = (rId, text) => setMultiRoomData(prev => prev.map(r => r.id === rId ? { ...r, report: text } : r));
 
-    // --- Image Processing ---
+    // --- Image Processing & Drag and Drop ---
     const compressImage = (file) => {
         return new Promise((resolve) => {
             const reader = new FileReader();
@@ -655,16 +654,77 @@ setLoadingState({ active: true, progress: 80, text: 'Saving report...' });
     const handleRemoveImage = useCallback((idToRemove) => setMainImages(prev => prev.filter(img => img.id !== idToRemove)), []);
     const handleImageRoomChange = useCallback((id, newRoomName) => setMainImages(prev => prev.map(img => img.id === id ? { ...img, room: newRoomName } : img)), []);
 
-    const handleMultiImageUpload = async (rId, e) => {
+    // Bulk Image Upload Handler
+    const handleBulkImageUpload = async (e) => {
         const files = Array.from(e.target.files);
         if (files.length === 0) return;
         const results = await Promise.all(files.map(f => compressImage(f)));
         const successful = results.filter(r => !r.failed);
-        setMultiRoomData(prev => prev.map(r => r.id === rId ? { ...r, images: [...r.images, ...successful] } : r));
+        setUncategorisedImages(prev => [...prev, ...successful]);
         e.target.value = '';
     };
+
+    const removeUncategorisedImage = (imgId) => {
+        setUncategorisedImages(prev => prev.filter(img => img.id !== imgId));
+    };
+
     const handleRemoveMultiImage = (rId, imgId) => {
         setMultiRoomData(prev => prev.map(r => r.id === rId ? { ...r, images: r.images.filter(i => i.id !== imgId) } : r));
+    };
+
+    // Drag and Drop Logic
+    const handleDragStart = (e, imgId, sourceId) => {
+        e.dataTransfer.setData('imgId', imgId);
+        e.dataTransfer.setData('sourceId', sourceId);
+    };
+
+    const handleDragOver = (e) => {
+        e.preventDefault(); 
+    };
+
+    const handleDrop = (e, targetId) => {
+        e.preventDefault();
+        const imgId = e.dataTransfer.getData('imgId');
+        const sourceId = e.dataTransfer.getData('sourceId');
+
+        if (sourceId === targetId) return;
+
+        let imgData = null;
+
+        // 1. Find and remove from source
+        if (sourceId === 'uncategorised') {
+            setUncategorisedImages(prev => {
+                imgData = prev.find(img => img.id === imgId);
+                return prev.filter(img => img.id !== imgId);
+            });
+        } else {
+            setMultiRoomData(prev => {
+                let newData = [...prev];
+                const sourceRoomIndex = newData.findIndex(r => r.id === sourceId);
+                if (sourceRoomIndex > -1) {
+                    imgData = newData[sourceRoomIndex].images.find(img => img.id === imgId);
+                    newData[sourceRoomIndex].images = newData[sourceRoomIndex].images.filter(img => img.id !== imgId);
+                }
+                return newData;
+            });
+        }
+
+        // 2. Add to target after a small delay to ensure state sets resolve 
+        setTimeout(() => {
+            if (!imgData) return;
+            if (targetId === 'uncategorised') {
+                setUncategorisedImages(prev => [...prev, imgData]);
+            } else {
+                setMultiRoomData(prev => {
+                    let newData = [...prev];
+                    const targetRoomIndex = newData.findIndex(r => r.id === targetId);
+                    if (targetRoomIndex > -1) {
+                        newData[targetRoomIndex].images = [...newData[targetRoomIndex].images, imgData];
+                    }
+                    return newData;
+                });
+            }
+        }, 0);
     };
 
     // --- PDF Generation ---
@@ -853,16 +913,17 @@ Condition: [Detailed Condition Only]
         }
     };
 
-    const analyseMultiRoomImages = async () => {
+    // Modified to accept a specific room ID for individual generation
+    const analyseMultiRoomImages = async (specificRoomId = null) => {
         if (!activeApiKey) return setErrorMsg("Missing API Key.");
         setIsAnalysingMain(true);
         setErrorMsg('');
         
         let updatedRooms = JSON.parse(JSON.stringify(multiRoomData));
-        const tasks = updatedRooms.filter(r => r.images.length > 0);
+        const tasks = updatedRooms.filter(r => (specificRoomId ? r.id === specificRoomId : true) && r.images.length > 0);
 
         if (tasks.length === 0) {
-            setErrorMsg("No images uploaded across any rooms to analyse.");
+            setErrorMsg("No images uploaded to analyse in the selected room(s).");
             setIsAnalysingMain(false);
             return;
         }
@@ -1418,12 +1479,49 @@ Condition: [Detailed Condition Only]
                                         </div>
                                     )}
 
-                                    {/* Multi-Room Analysis UI (Maintenance, Full Property Checkout) */}
+                                    {/* Multi-Room Analysis UI (Maintenance, Full Property Checkout) with Drag and Drop */}
                                     {isMultiRoom && (
                                         <div className="space-y-6">
-                                            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-end mb-4 gap-4">
-                                                <h3 className="text-xl font-bold text-gray-900 border-b-2 border-gray-200 pb-1">Room-by-Room AI Analysis</h3>
-                                                <button onClick={analyseMultiRoomImages} disabled={isAnalysingMain} className="bg-[#2f314b] text-white px-8 py-3 rounded-xl font-bold shadow-md hover:bg-[#2f314b]/90 transition disabled:bg-gray-400 w-full sm:w-auto">
+                                            
+                                            {/* Master Bulk Upload Panel */}
+                                            <div className="bg-white border-2 border-gray-100 p-6 rounded-xl shadow-sm">
+                                                <h3 className="text-xl font-bold text-gray-900 border-b-2 border-gray-200 pb-2 mb-4">Master Photo Upload</h3>
+                                                <p className="text-sm text-gray-500 mb-4">Upload all your photos here in bulk, then drag and drop them into the appropriate rooms below.</p>
+                                                
+                                                <div className="p-4 border-2 border-dashed border-[#2f314b]/30 rounded-xl bg-gray-50 mb-6 transition hover:bg-gray-100">
+                                                    <input type="file" multiple accept="image/*" onChange={handleBulkImageUpload} className="block w-full text-sm text-gray-500 file:mr-6 file:py-3 file:px-6 file:rounded-lg file:border-0 file:text-sm file:font-bold file:bg-[#2f314b] file:text-white hover:file:bg-[#2f314b]/90 cursor-pointer" />
+                                                </div>
+
+                                                {/* Uncategorised Images Drop Zone */}
+                                                <div 
+                                                    className="min-h-[120px] bg-gray-50 border-2 border-dashed border-gray-300 rounded-xl p-4 transition-colors"
+                                                    onDragOver={handleDragOver}
+                                                    onDrop={(e) => handleDrop(e, 'uncategorised')}
+                                                >
+                                                    <h4 className="text-sm font-bold text-gray-700 uppercase tracking-wide mb-3">Uncategorised Photos</h4>
+                                                    {uncategorisedImages.length === 0 ? (
+                                                        <p className="text-sm text-gray-400 font-medium flex items-center justify-center h-16">Drag photos back here to remove them from a room.</p>
+                                                    ) : (
+                                                        <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-3">
+                                                            {uncategorisedImages.map((img) => (
+                                                                <div 
+                                                                    key={img.id} 
+                                                                    draggable 
+                                                                    onDragStart={(e) => handleDragStart(e, img.id, 'uncategorised')}
+                                                                    className="relative group rounded-lg overflow-hidden border border-gray-300 shadow-sm cursor-move hover:ring-2 hover:ring-[#2f314b] transition-all"
+                                                                >
+                                                                    <img src={img.data ? `data:${img.mimeType};base64,${img.data}` : img.url} className="w-full h-16 object-cover" />
+                                                                    <button onClick={() => removeUncategorisedImage(img.id)} className="absolute inset-0 bg-red-600/90 text-white text-xs font-bold opacity-0 group-hover:opacity-100 transition flex items-center justify-center">Delete</button>
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </div>
+
+                                            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-end mb-4 gap-4 mt-8">
+                                                <h3 className="text-xl font-bold text-gray-900 border-b-2 border-gray-200 pb-1">Room-by-Room Breakdown</h3>
+                                                <button onClick={() => analyseMultiRoomImages()} disabled={isAnalysingMain} className="bg-[#2f314b] text-white px-8 py-3 rounded-xl font-bold shadow-md hover:bg-[#2f314b]/90 transition disabled:bg-gray-400 w-full sm:w-auto">
                                                     {isAnalysingMain ? 'Analysing...' : 'Generate All AI Reports'}
                                                 </button>
                                             </div>
@@ -1442,23 +1540,38 @@ Condition: [Detailed Condition Only]
                                             <div className="bg-white border-2 border-gray-100 p-6 rounded-xl shadow-sm space-y-8">
                                                 {multiRoomData.map((room) => (
                                                     <div key={room.id} className="bg-gray-50 p-6 rounded-xl border border-gray-200">
-                                                        <h5 className="font-bold text-gray-800 mb-4 text-xl border-b-2 border-gray-200 pb-2">{room.name}</h5>
-                                                        
-                                                        <div className="p-4 border-2 border-dashed border-gray-300 rounded-xl bg-white mb-6 hover:bg-gray-50 transition">
-                                                            <input type="file" multiple accept="image/*" onChange={(e) => handleMultiImageUpload(room.id, e)} className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:font-bold file:bg-gray-200 file:text-gray-700 hover:file:bg-gray-300 cursor-pointer" />
+                                                        <div className="flex flex-col sm:flex-row justify-between sm:items-center mb-4 border-b-2 border-gray-200 pb-2 gap-3">
+                                                            <h5 className="font-bold text-gray-800 text-xl">{room.name}</h5>
+                                                            <button onClick={() => analyseMultiRoomImages(room.id)} disabled={isAnalysingMain || room.images.length === 0} className="text-xs bg-[#2f314b] text-white px-4 py-2 rounded-lg font-bold hover:bg-[#2f314b]/90 transition shadow-sm disabled:opacity-50 disabled:cursor-not-allowed">
+                                                                Generate Report for this Room
+                                                            </button>
                                                         </div>
-
-                                                        {room.images.length > 0 && (
-                                                            <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-3 mb-6">
-                                                                {room.images.map((img, idx) => (
-                                                                    <div key={img.id} className="relative group rounded-lg overflow-hidden border border-gray-300 shadow-sm">
-                                                                        <img src={img.data ? `data:${img.mimeType};base64,${img.data}` : img.url} className="w-full h-20 object-cover" />
-                                                                        <button onClick={() => handleRemoveMultiImage(room.id, img.id)} className="absolute inset-0 bg-red-600/90 text-white text-xs font-bold opacity-0 group-hover:opacity-100 transition flex items-center justify-center">Remove</button>
-                                                                        <div className="absolute bottom-0 left-0 right-0 bg-black/60 text-white text-[9px] font-bold uppercase text-center py-0.5">Image {idx + 1}</div>
-                                                                    </div>
-                                                                ))}
-                                                            </div>
-                                                        )}
+                                                        
+                                                        {/* Individual Room Drop Zone */}
+                                                        <div 
+                                                            className={`min-h-[100px] border-2 border-dashed rounded-xl mb-6 transition-colors ${room.images.length > 0 ? 'border-gray-300 bg-white p-4' : 'border-gray-400 bg-gray-100/50 flex items-center justify-center'}`}
+                                                            onDragOver={handleDragOver}
+                                                            onDrop={(e) => handleDrop(e, room.id)}
+                                                        >
+                                                            {room.images.length > 0 ? (
+                                                                <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 gap-3">
+                                                                    {room.images.map((img, idx) => (
+                                                                        <div 
+                                                                            key={img.id} 
+                                                                            draggable
+                                                                            onDragStart={(e) => handleDragStart(e, img.id, room.id)}
+                                                                            className="relative group rounded-lg overflow-hidden border border-gray-300 shadow-sm cursor-move hover:ring-2 hover:ring-[#2f314b]"
+                                                                        >
+                                                                            <img src={img.data ? `data:${img.mimeType};base64,${img.data}` : img.url} className="w-full h-20 object-cover" />
+                                                                            <button onClick={() => handleRemoveMultiImage(room.id, img.id)} className="absolute inset-0 bg-red-600/90 text-white text-xs font-bold opacity-0 group-hover:opacity-100 transition flex items-center justify-center">Remove</button>
+                                                                            <div className="absolute bottom-0 left-0 right-0 bg-black/60 text-white text-[9px] font-bold uppercase text-center py-0.5">Image {idx + 1}</div>
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+                                                            ) : (
+                                                                <p className="text-sm font-bold text-gray-400">Drag photos here for {room.name}</p>
+                                                            )}
+                                                        </div>
 
                                                         <div className="mt-4">
                                                             <label className="text-sm font-bold text-gray-700 block mb-2 uppercase tracking-wide">
