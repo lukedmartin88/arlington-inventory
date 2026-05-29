@@ -512,41 +512,46 @@ export default function App() {
 
         try {
             // Upload mainImages to Firebase Storage and replace base64 data with download URLs
-            setLoadingState({ active: true, progress: 10, text: 'Uploading images...' });
+       setLoadingState({ active: true, progress: 10, text: 'Uploading images...' });
 
-            const mainImagesUploaded = await Promise.all(
-                mainImages.map(async (img) => {
-                    if (!img.data) return img; // already a URL or empty
-                    try {
-                        const url = await uploadImageToStorage(reportId, img.id, img.mimeType, img.data);
-                        return { ...img, data: '', url };
-                    } catch (e) {
-                        console.error("Failed to upload image:", img.id, e);
-                        return { ...img, data: '' }; // save without image rather than failing entirely
-                    }
-                })
-            );
+// 1. Process main images sequentially
+const mainImagesUploaded = [];
+for (const img of mainImages) {
+    if (!img.data) {
+        mainImagesUploaded.push(img);
+        continue;
+    }
+    try {
+        const url = await uploadImageToStorage(reportId, img.id, img.mimeType, img.data);
+        mainImagesUploaded.push({ ...img, data: '', url });
+    } catch (e) {
+        console.error("Failed to upload image:", img.id, e);
+        mainImagesUploaded.push({ ...img, data: '' }); 
+    }
+}
 
-            const multiRoomDataUploaded = await Promise.all(
-                multiRoomData.map(async (room) => {
-                    const uploadedImages = await Promise.all(
-                        room.images.map(async (img) => {
-                            if (!img.data) return img;
-                            try {
-                                const url = await uploadImageToStorage(reportId, img.id, img.mimeType, img.data);
-                                return { ...img, data: '', url };
-                            } catch (e) {
-                                console.error("Failed to upload multi-room image:", img.id, e);
-                                return { ...img, data: '' };
-                            }
-                        })
-                    );
-                    return { ...room, images: uploadedImages };
-                })
-            );
+// 2. Process multi-room images sequentially
+const multiRoomDataUploaded = [];
+for (const room of multiRoomData) {
+    const uploadedImages = [];
+    for (const img of room.images) {
+        if (!img.data) {
+            uploadedImages.push(img);
+            continue;
+        }
+        try {
+            const url = await uploadImageToStorage(reportId, img.id, img.mimeType, img.data);
+            uploadedImages.push({ ...img, data: '', url });
+        } catch (e) {
+            console.error("Failed to upload multi-room image:", img.id, e);
+            uploadedImages.push({ ...img, data: '' });
+        }
+    }
+    multiRoomDataUploaded.push({ ...room, images: uploadedImages });
+}
 
-            setLoadingState({ active: true, progress: 80, text: 'Saving report...' });
-
+setLoadingState({ active: true, progress: 80, text: 'Saving report...' });
+          
             const reportData = {
                 id: reportId,
                 propertyId: selectedPropertyId,
