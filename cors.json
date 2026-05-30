@@ -1,0 +1,7 @@
+[
+  {
+    "origin": ["https://arlington-inventory.vercel.app/"],
+    "method": ["GET", "PUT", "POST", "DELETE"],
+    "maxAgeSeconds": 3600
+  }
+]

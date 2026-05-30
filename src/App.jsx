@@ -26,7 +26,7 @@ const firebaseConfig = {
   projectId: "fire-safety-testing",
   storageBucket: "fire-safety-testing.firebasestorage.app",
   messagingSenderId: "622006469176",
-  appId: "1:622006469276:web:fa890d9b1ec95ba9869ccd",
+  appId: "1:622006469176:web:fa890d9b1ec95ba9869ccd",
   measurementId: "G-DZ935GWD3B"
 };
 
@@ -37,23 +37,15 @@ const storage = getStorage(app);
 const STORE_PROPS = 'properties';
 const STORE_REPORTS = 'reports';
 
-// --- FIX #6: Surface localStorage errors to the user rather than swallowing silently ---
 const getEnvKey = () => {
-    const envKey = import.meta.env.VITE_GEMINI_API_KEY;
-    if (envKey) return envKey;
     try {
-        return localStorage.getItem('arlington_gemini_api_key') || '';
+        const envKey = import.meta.env.VITE_GEMINI_API_KEY;
+        if (envKey) return envKey;
+        const savedKey = localStorage.getItem('arlington_gemini_api_key');
+        return savedKey || "";
     } catch (e) {
-        console.warn('localStorage unavailable (private browsing?). API key will not persist between sessions.', e);
-        return '';
-    }
-};
-
-const saveApiKey = (key) => {
-    try {
-        localStorage.setItem('arlington_gemini_api_key', key);
-    } catch (e) {
-        console.warn('localStorage unavailable — API key cannot be persisted.', e);
+        console.warn("Local storage disabled or unavailable:", e);
+        return "STORAGE_ERROR"; 
     }
 };
 
@@ -80,14 +72,13 @@ const callGeminiWithFallback = async (payload, activeApiKey) => {
             return await response.json();
         } catch (error) {
             lastError = error;
-            if (error.message.includes('API_KEY_INVALID')) throw new Error('Your API key is invalid.');
+            if (error.message.includes('API_KEY_INVALID')) throw new Error("Your API key is invalid.");
             continue;
         }
     }
     throw lastError;
 };
 
-// --- Stable Formatter Utilities ---
 const getOrdinalSuffix = (day) => {
     if (day === 1 || day === 21 || day === 31) return 'st';
     if (day === 2 || day === 22) return 'nd';
@@ -124,15 +115,18 @@ const formatType = (type) => {
     return type;
 };
 
-const LOGO_URL = 'https://i.ibb.co/N6Z7PwWc/Arlington-large-20251119-124957-0000.jpg';
+const LOGO_URL = "https://i.ibb.co/N6Z7PwWc/Arlington-large-20251119-124957-0000.jpg";
 
-// --- FIX #7: Replace module-level mutable counter with crypto.randomUUID() ---
-const newId = () => crypto.randomUUID();
+const newId = () => {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+        return crypto.randomUUID();
+    }
+    return `id-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+};
 
-// --- Firebase Firestore Database ---
 const dbGetAll = async (storeName) => {
     const snapshot = await getDocs(collection(firestoreDb, storeName));
-    return snapshot.docs.map(d => d.data());
+    return snapshot.docs.map(doc => doc.data());
 };
 
 const dbPut = async (storeName, item) => {
@@ -148,99 +142,41 @@ const dbDelete = async (storeName, id) => {
 
 const dbGetReportsByProperty = async (propertyId) => {
     const reportsRef = collection(firestoreDb, STORE_REPORTS);
-    const q = query(reportsRef, where('propertyId', '==', propertyId));
+    const q = query(reportsRef, where("propertyId", "==", propertyId));
     const snapshot = await getDocs(q);
-    return snapshot.docs.map(d => d.data());
+    return snapshot.docs.map(doc => doc.data());
 };
 
 const dbGetReport = async (id) => {
     const docRef = doc(firestoreDb, STORE_REPORTS, id);
     const docSnap = await getDoc(docRef);
     if (docSnap.exists()) return docSnap.data();
-    throw new Error('Report not found in database.');
+    throw new Error("Report not found in database.");
 };
 
-// --- FIX #3: Use 'base64' format directly — avoids Firebase re-parsing the data URL prefix ---
-// --- FIX: 15s timeout kept, but now applied per-image rather than globally ---
-const uploadImageToStorage = async (reportId, imageId, base64Data) => {
+const uploadImageToStorage = async (reportId, imageId, mimeType, base64Data) => {
     const path = `reports/${reportId}/${imageId}`;
     const imageRef = ref(storage, path);
-
-    const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error(`Upload timeout for image ${imageId}`)), 15000)
+    const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error("Network timeout: Firebase upload took too long.")), 15000)
     );
-
     await Promise.race([
-        uploadString(imageRef, base64Data, 'base64'),  // FIX #3: 'base64' not 'data_url'
+        uploadString(imageRef, base64Data, 'base64'),
         timeoutPromise
     ]);
-
     return await getDownloadURL(imageRef);
 };
 
-// --- FIX #12: Surface storage deletion errors instead of silently swallowing ---
 const deleteReportImages = async (reportId) => {
     try {
         const folderRef = ref(storage, `reports/${reportId}`);
         const listResult = await listAll(folderRef);
-        const results = await Promise.allSettled(
-            listResult.items.map(itemRef => deleteObject(itemRef))
-        );
-        const failed = results.filter(r => r.status === 'rejected');
-        if (failed.length > 0) {
-            console.error(`${failed.length} image(s) failed to delete for report ${reportId}:`, failed);
-        }
+        await Promise.all(listResult.items.map(itemRef => deleteObject(itemRef)));
     } catch (e) {
-        console.error('Could not list/delete storage images for report:', reportId, e.message);
-        // Re-throw so callers can surface this to the user if needed
-        throw e;
+        console.warn("Storage deletion blocked or path invalid:", e.message);
     }
 };
 
-// --- FIX #1: Parallel image upload helper ---
-// Uploads a flat array of {img, reportId} in parallel batches of BATCH_SIZE.
-// Returns an array of {img, url} results in the same order.
-const UPLOAD_BATCH_SIZE = 5;
-
-const uploadImagesInParallel = async (reportId, images, onProgress) => {
-    const results = new Array(images.length);
-    let completed = 0;
-
-    for (let i = 0; i < images.length; i += UPLOAD_BATCH_SIZE) {
-        const batch = images.slice(i, i + UPLOAD_BATCH_SIZE);
-        const batchResults = await Promise.allSettled(
-            batch.map(async (img, batchIdx) => {
-                const globalIdx = i + batchIdx;
-                if (!img.data) {
-                    // Already a URL (previously saved) — pass through
-                    return { globalIdx, img, url: img.url || null };
-                }
-                const url = await uploadImageToStorage(reportId, img.id, img.data);
-                return { globalIdx, img, url };
-            })
-        );
-
-        for (const result of batchResults) {
-            if (result.status === 'fulfilled') {
-                const { globalIdx, img, url } = result.value;
-                results[globalIdx] = url
-                    ? { ...img, data: '', url }
-                    : { ...img, data: '' }; // upload failed silently for this image
-            } else {
-                // Log but don't abort the whole save
-                console.error('Image upload failed:', result.reason);
-                const failedImg = batch[batchResults.indexOf(result)];
-                results[i + batchResults.indexOf(result)] = { ...failedImg, data: '' };
-            }
-            completed++;
-            onProgress(completed);
-        }
-    }
-
-    return results;
-};
-
-// --- Fire Safety Sub-Components ---
 const AlarmSection = ({ title, config, setConfig, hasDuration = false }) => (
     <div className="bg-white p-4 rounded-xl border border-gray-200 mb-4 shadow-sm">
         <label className="flex items-center space-x-3 mb-4 cursor-pointer">
@@ -352,7 +288,7 @@ const AlarmRow = ({ title, config }) => {
 };
 
 export default function App() {
-    const [currentView, setCurrentView] = useState('home');
+    const [currentView, setCurrentView] = useState('home'); 
     const [properties, setProperties] = useState([]);
     const [selectedPropertyId, setSelectedPropertyId] = useState(null);
     const [propertyReports, setPropertyReports] = useState([]);
@@ -360,27 +296,27 @@ export default function App() {
     const [newPropertyAddress, setNewPropertyAddress] = useState('');
     const [showApiSettings, setShowApiSettings] = useState(false);
     const [activeApiKey, setActiveApiKey] = useState(getEnvKey());
-    // FIX #6: track if localStorage is unavailable so we can warn the user
-    const [localStorageUnavailable, setLocalStorageUnavailable] = useState(false);
     const [step, setStep] = useState(0);
-    const [reportType, setReportType] = useState(null);
+    const [reportType, setReportType] = useState(null); 
+    const [selectedReportId, setSelectedReportId] = useState(null);
+    
     const [tenancyInfo, setTenancyInfo] = useState({
         roomIdentifier: '', tenantName: '', moveInDate: '', checkOutDate: '', dateOfInventory: '', clerkName: '', hasEnsuite: false, checkoutScope: 'room'
     });
-    const [mainImages, setMainImages] = useState([]);
+    const [mainImages, setMainImages] = useState([]);   
     const [mainReport, setMainReport] = useState('');
     const [maintenanceMeta, setMaintenanceMeta] = useState({ date: '', clerkName: '' });
-    const [multiRoomData, setMultiRoomData] = useState([{ id: newId(), name: '', images: [], report: '' }]);
+    
+    const [multiRoomData, setMultiRoomData] = useState([]);
     const [uncategorisedImages, setUncategorisedImages] = useState([]);
     const [lightboxImage, setLightboxImage] = useState(null);
     const roomInputRefs = useRef({});
+
     const [fireSafetyData, setFireSafetyData] = useState({
-        smoke: { tested: false, count: '', location: '' },
-        co: { tested: false, count: '', location: '' },
-        heat: { tested: false, count: '', location: '' },
-        emergency: { tested: false, count: '', location: '', duration: '' },
+        smoke: { tested: false, count: '', location: '' }, co: { tested: false, count: '', location: '' }, heat: { tested: false, count: '', location: '' }, emergency: { tested: false, count: '', location: '', duration: '' },
         hasFaults: false, faults: '', actionPlan: '', isResolved: false, resolvedDate: '', resolvedBy: '', signature: ''
     });
+
     const [isAnalysingMain, setIsAnalysingMain] = useState(false);
     const [isPolishingMain, setIsPolishingMain] = useState(false);
     const [loadingState, setLoadingState] = useState({ active: false, progress: 0, text: '' });
@@ -394,65 +330,53 @@ export default function App() {
     const isMultiRoom = reportType === 'maintenance' || (reportType === 'checkout' && tenancyInfo.checkoutScope === 'property');
 
     useEffect(() => {
+        if (multiRoomData.length === 0) setMultiRoomData([{ id: newId(), name: '', images: [], report: '' }]);
+    }, [multiRoomData.length]);
+
+    useEffect(() => {
         const loadInitialData = async () => {
             try {
                 const props = await dbGetAll(STORE_PROPS);
                 setProperties(props);
-            } catch (e) { console.error('Failed to load DB', e); }
+            } catch (e) { console.error("Failed to load DB", e); }
         };
         loadInitialData();
-
-        // FIX #6: detect localStorage unavailability on mount
-        try {
-            localStorage.setItem('__ls_test__', '1');
-            localStorage.removeItem('__ls_test__');
-        } catch {
-            setLocalStorageUnavailable(true);
-        }
-
         return () => { if (progressIntervalRef.current) clearInterval(progressIntervalRef.current); };
     }, []);
 
     useEffect(() => {
         if (!document.getElementById('html2pdf-script')) {
-            const script = document.createElement('script');
+            const script = document.createElement("script");
             script.id = 'html2pdf-script';
-            script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js';
+            script.src = "https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js";
             script.async = true;
-            script.onerror = () => setPdfFallbackMsg('PDF library failed to load. Download will use native print.');
+            script.onerror = () => setPdfFallbackMsg("PDF library failed to load. Download will use native print.");
             document.body.appendChild(script);
         }
     }, []);
 
-    // --- FIX #13: Inline logo as base64 as primary; external URL as genuine fallback ---
     useEffect(() => {
         const img = new Image();
-        img.crossOrigin = 'Anonymous';
+        img.crossOrigin = "Anonymous";
         img.onload = () => {
             try {
-                const canvas = document.createElement('canvas');
+                const canvas = document.createElement("canvas");
                 canvas.width = img.width;
                 canvas.height = img.height;
-                canvas.getContext('2d').drawImage(img, 0, 0);
-                setLogoSrc(canvas.toDataURL('image/jpeg'));
-            } catch (e) {
-                console.warn('Logo canvas blocked by CORS; using URL fallback.', e);
-                // logoSrc already defaults to LOGO_URL so no further action needed
-            }
-        };
-        img.onerror = () => {
-            console.warn('Logo failed to load from external URL. PDF logo will be missing.');
+                canvas.getContext("2d").drawImage(img, 0, 0);
+                setLogoSrc(canvas.toDataURL("image/jpeg"));
+            } catch (e) { console.warn("Logo canvas blocked by CORS; using URL fallback."); }
         };
         img.src = LOGO_URL;
     }, []);
 
-    // --- FIX #9: Use replaceState for step changes (intermediate), pushState only for view changes ---
     useEffect(() => {
-        const state = { view: currentView, step };
-        if (window.history.state?.view !== currentView) {
-            window.history.pushState(state, '');
-        } else if (window.history.state?.step !== step) {
-            window.history.replaceState(state, '');
+        if (!window.history.state || window.history.state.view !== currentView || window.history.state.step !== step) {
+            if (window.history.state && window.history.state.view === currentView) {
+                window.history.replaceState({ view: currentView, step: step }, "");
+            } else {
+                window.history.pushState({ view: currentView, step: step }, "");
+            }
         }
     }, [currentView, step]);
 
@@ -465,7 +389,7 @@ export default function App() {
                 } else {
                     if (view === 'portfolio' && selectedPropertyId) {
                         const reports = await dbGetReportsByProperty(selectedPropertyId);
-                        setPropertyReports(reports.sort((a, b) => new Date(b.reportDate) - new Date(a.reportDate)));
+                        setPropertyReports(reports.sort((a,b) => new Date(b.reportDate) - new Date(a.reportDate)));
                     }
                     setCurrentView(view);
                 }
@@ -474,15 +398,18 @@ export default function App() {
         window.addEventListener('popstate', handlePopState);
         return () => window.removeEventListener('popstate', handlePopState);
     }, [currentView, step, selectedPropertyId]);
-
+  
     const handleModalBackdropClick = (e) => {
         if (e.target === e.currentTarget) setShowApiSettings(false);
     };
 
     useEffect(() => {
         if (!showApiSettings && !lightboxImage) return;
-        const handleKey = (e) => {
-            if (e.key === 'Escape') { setShowApiSettings(false); setLightboxImage(null); }
+        const handleKey = (e) => { 
+            if (e.key === 'Escape') {
+                setShowApiSettings(false);
+                setLightboxImage(null);
+            }
         };
         window.addEventListener('keydown', handleKey);
         return () => window.removeEventListener('keydown', handleKey);
@@ -491,7 +418,7 @@ export default function App() {
     const handleSelectProperty = async (id) => {
         setSelectedPropertyId(id);
         const reports = await dbGetReportsByProperty(id);
-        setPropertyReports(reports.sort((a, b) => new Date(b.reportDate) - new Date(a.reportDate)));
+        setPropertyReports(reports.sort((a,b) => new Date(b.reportDate) - new Date(a.reportDate)));
         setCurrentView('portfolio');
     };
 
@@ -507,15 +434,12 @@ export default function App() {
 
     const handleDeleteProperty = async (e, id) => {
         e.stopPropagation();
-        if (window.confirm('Are you sure you want to delete this property and all of its reports?')) {
-            const reports = await dbGetReportsByProperty(id);
-            for (const r of reports) {
-                try { await deleteReportImages(r.id); } catch { /* best effort */ }
-                await dbDelete(STORE_REPORTS, r.id);
-            }
-            await dbDelete(STORE_PROPS, id);
-            const props = await dbGetAll(STORE_PROPS);
-            setProperties(props);
+        if (window.confirm("Are you sure you want to delete this property and all of its reports?")) {
+             const reports = await dbGetReportsByProperty(id);
+             for (const r of reports) await dbDelete(STORE_REPORTS, r.id);
+             await dbDelete(STORE_PROPS, id);
+             const props = await dbGetAll(STORE_PROPS);
+             setProperties(props);
         }
     };
 
@@ -528,7 +452,7 @@ export default function App() {
     const goPortfolio = async () => {
         handleResetWizard();
         const reports = await dbGetReportsByProperty(selectedPropertyId);
-        setPropertyReports(reports.sort((a, b) => new Date(b.reportDate) - new Date(a.reportDate)));
+        setPropertyReports(reports.sort((a,b) => new Date(b.reportDate) - new Date(a.reportDate)));
         setCurrentView('portfolio');
     };
 
@@ -548,19 +472,55 @@ export default function App() {
         setMultiRoomData(report.data.multiRoomData || [{ id: newId(), name: '', images: [], report: '' }]);
         setUncategorisedImages([]);
         setFireSafetyData(report.data.fireSafetyData || {});
+        setSelectedReportId(id);
         setStep(3);
         setCurrentView('view');
     };
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // FIX #1 + #2 + #3: Parallelised save with real progress tracking
-    // ─────────────────────────────────────────────────────────────────────────
+    const handleEditReport = () => {
+        setStep(1);
+        setCurrentView('wizard');
+    };
+
+    const handleUseAsTemplate = async (id) => {
+        const report = await dbGetReport(id);
+        setReportType(report.reportType);
+        
+        // Deep copy data so we do not mutate the original
+        const data = JSON.parse(JSON.stringify(report.data));
+        
+        // Wipe dates and signatures to ensure a fresh report structure
+        if (data.tenancyInfo) {
+            data.tenancyInfo.dateOfInventory = '';
+            data.tenancyInfo.checkOutDate = '';
+        }
+        if (data.maintenanceMeta) {
+            data.maintenanceMeta.date = '';
+        }
+        if (data.fireSafetyData) {
+            data.fireSafetyData.signature = '';
+        }
+
+        setTenancyInfo(data.tenancyInfo || {});
+        setMainImages(data.mainImages || []);
+        setMainReport(data.mainReport || '');
+        setMaintenanceMeta(data.maintenanceMeta || { date: '', clerkName: '' });
+        setMultiRoomData(data.multiRoomData || [{ id: newId(), name: '', images: [], report: '' }]);
+        setUncategorisedImages([]);
+        setFireSafetyData(data.fireSafetyData || {});
+        
+        // Clear the selected ID so this saves as a brand new document
+        setSelectedReportId(null);
+        setStep(1);
+        setCurrentView('wizard');
+    };
+
     const handleSaveReportToPortfolio = async () => {
         setIsProcessing(true);
         setErrorMsg('');
-
         let displayDate = new Date().toISOString();
         let inspectorName = '';
+
         if (reportType === 'inventory' || reportType === 'checkout' || reportType === 'fire_safety') {
             displayDate = tenancyInfo.dateOfInventory || displayDate;
             inspectorName = tenancyInfo.clerkName;
@@ -569,54 +529,55 @@ export default function App() {
             inspectorName = maintenanceMeta.clerkName;
         }
 
-        const reportId = newId();
+        // If editing an existing report, overwrite it. Otherwise generate a new ID.
+        const reportId = selectedReportId || newId();
 
         try {
             setLoadingState({ active: true, progress: 5, text: 'Preparing to save...' });
-            await new Promise(resolve => setTimeout(resolve, 50)); // yield to render
+            
+            await new Promise(resolve => setTimeout(resolve, 50));
 
-            // Flatten all images that need uploading into a single list for parallel processing
-            const mainImagesToUpload = mainImages.filter(img => img.data);
-            const multiRoomImagesToUpload = multiRoomData.flatMap(room =>
-                room.images.filter(img => img.data).map(img => ({ ...img, _roomId: room.id }))
+            const unuploadedMain = mainImages.filter(img => img.data).map(img => ({ target: 'main', img }));
+            const unuploadedMulti = multiRoomData.flatMap(room => 
+                room.images.filter(img => img.data).map(img => ({ target: 'multi', roomId: room.id, img }))
             );
+            
+            const allUploadTasks = [...unuploadedMain, ...unuploadedMulti];
+            let processedCount = 0;
+            const totalUploads = allUploadTasks.length;
 
-            const totalImagesToUpload = mainImagesToUpload.length + multiRoomImagesToUpload.length;
-            let uploadedCount = 0;
-
-            // FIX #5: Real progress — derived from actual upload completions, not a fake interval
-            const onProgress = (count) => {
-                uploadedCount = count;
-                const pct = 5 + (uploadedCount / Math.max(1, totalImagesToUpload)) * 75;
-                setLoadingState({
-                    active: true,
-                    progress: pct,
-                    text: `Uploading images (${uploadedCount}/${totalImagesToUpload})...`
-                });
-            };
-
-            // Upload main images in parallel batches
-            const uploadedMainImages = mainImages.some(img => img.data)
-                ? await uploadImagesInParallel(reportId, mainImages, onProgress)
-                : mainImages;
-
-            // Upload multi-room images in parallel batches (offset progress count)
-            const multiRoomDataUploaded = [];
-            for (const room of multiRoomData) {
-                if (room.images.some(img => img.data)) {
-                    const uploaded = await uploadImagesInParallel(
-                        reportId,
-                        room.images,
-                        (count) => onProgress(uploadedCount + count)
-                    );
-                    multiRoomDataUploaded.push({ ...room, images: uploaded });
-                } else {
-                    multiRoomDataUploaded.push(room);
+            const uploadPromises = allUploadTasks.map(async (task) => {
+                const { img, target, roomId } = task;
+                try {
+                    const url = await uploadImageToStorage(reportId, img.id, img.mimeType, img.data);
+                    processedCount++;
+                    setLoadingState(prev => ({ ...prev, text: `Uploading images (${processedCount}/${totalUploads})...`, progress: 5 + (processedCount / Math.max(1, totalUploads)) * 75 }));
+                    return { ...task, url, success: true };
+                } catch (e) {
+                    console.error("Failed to upload image:", img.id, e);
+                    processedCount++;
+                    setLoadingState(prev => ({ ...prev, progress: 5 + (processedCount / Math.max(1, totalUploads)) * 75 }));
+                    return { ...task, url: '', success: false };
                 }
-            }
+            });
+
+            const resolvedUploads = await Promise.all(uploadPromises);
+
+            const mainImagesUploaded = mainImages.map(img => {
+                const uploaded = resolvedUploads.find(r => r.target === 'main' && r.img.id === img.id);
+                return uploaded ? { ...img, data: '', url: uploaded.url } : img;
+            });
+
+            const multiRoomDataUploaded = multiRoomData.map(room => {
+                const updatedImages = room.images.map(img => {
+                    const uploaded = resolvedUploads.find(r => r.target === 'multi' && r.roomId === room.id && r.img.id === img.id);
+                    return uploaded ? { ...img, data: '', url: uploaded.url } : img;
+                });
+                return { ...room, images: updatedImages };
+            });
 
             setLoadingState({ active: true, progress: 85, text: 'Writing report to database...' });
-
+          
             const reportData = {
                 id: reportId,
                 propertyId: selectedPropertyId,
@@ -624,30 +585,21 @@ export default function App() {
                 reportDate: displayDate,
                 inspectorName,
                 createdAt: new Date().toISOString(),
-                data: {
-                    tenancyInfo,
-                    mainImages: uploadedMainImages,
-                    mainReport,
-                    maintenanceMeta,
-                    multiRoomData: multiRoomDataUploaded,
-                    fireSafetyData
-                }
+                data: { tenancyInfo, mainImages: mainImagesUploaded, mainReport, maintenanceMeta, multiRoomData: multiRoomDataUploaded, fireSafetyData }
             };
 
             await dbPut(STORE_REPORTS, reportData);
-
+            
             setLoadingState({ active: true, progress: 100, text: 'Saved successfully!' });
             await new Promise(resolve => setTimeout(resolve, 800));
             setLoadingState({ active: false, progress: 0, text: '' });
             await goPortfolio();
-
+            
         } catch (err) {
-            console.error('Full Save Error Context:', err);
-            let userError = 'Failed to save report. Please check your connection.';
-            if (err.message?.includes('Missing or insufficient permissions')) {
-                userError = 'Permission Denied: Your Firebase security rules are blocking the save.';
-            } else if (err.message?.includes('timeout')) {
-                userError = 'Upload timed out. Check your internet connection and try again.';
+            console.error("Full Save Error Context:", err);
+            let userError = "Failed to save report. Please check your connection.";
+            if (err.message?.includes("Missing or insufficient permissions")) {
+                userError = "Permission Denied: Your Firebase Database security rules are blocking the save.";
             } else if (err.message) {
                 userError = `Save Error: ${err.message}`;
             }
@@ -659,35 +611,28 @@ export default function App() {
     };
 
     const handleDeleteReport = async (id) => {
-        if (window.confirm('Delete this report permanently?')) {
+        if (window.confirm("Delete this report permanently?")) {
             try {
                 await deleteReportImages(id);
+                await dbDelete(STORE_REPORTS, id);
+                const reports = await dbGetReportsByProperty(selectedPropertyId);
+                setPropertyReports(reports.sort((a,b) => new Date(b.reportDate) - new Date(a.reportDate)));
             } catch (e) {
-                // FIX #12: Warn user if image cleanup fails rather than silently ignoring
-                console.error('Storage cleanup failed — orphaned images may remain:', e);
+                alert(e.message);
             }
-            await dbDelete(STORE_REPORTS, id);
-            const reports = await dbGetReportsByProperty(selectedPropertyId);
-            setPropertyReports(reports.sort((a, b) => new Date(b.reportDate) - new Date(a.reportDate)));
         }
     };
 
-    // FIX #8: Stable reset — use a single fixed id for the initial room to avoid re-mount churn
     const handleResetWizard = () => {
         setReportType(null);
+        setSelectedReportId(null);
         setMainReport('');
         setMainImages([]);
         setUncategorisedImages([]);
         setTenancyInfo({ roomIdentifier: '', tenantName: '', moveInDate: '', checkOutDate: '', dateOfInventory: '', clerkName: '', hasEnsuite: false, checkoutScope: 'room' });
         setMaintenanceMeta({ date: '', clerkName: '' });
         setMultiRoomData([{ id: newId(), name: '', images: [], report: '' }]);
-        setFireSafetyData({
-            smoke: { tested: false, count: '', location: '' },
-            co: { tested: false, count: '', location: '' },
-            heat: { tested: false, count: '', location: '' },
-            emergency: { tested: false, count: '', location: '', duration: '' },
-            hasFaults: false, faults: '', actionPlan: '', isResolved: false, resolvedDate: '', resolvedBy: '', signature: ''
-        });
+        setFireSafetyData({ smoke: { tested: false, count: '', location: '' }, co: { tested: false, count: '', location: '' }, heat: { tested: false, count: '', location: '' }, emergency: { tested: false, count: '', location: '', duration: '' }, hasFaults: false, faults: '', actionPlan: '', isResolved: false, resolvedDate: '', resolvedBy: '', signature: '' });
         setErrorMsg('');
     };
 
@@ -704,7 +649,7 @@ export default function App() {
     const handleApiChange = (e) => {
         const newKey = e.target.value;
         setActiveApiKey(newKey);
-        saveApiKey(newKey); // FIX #6: uses wrapper that handles unavailability
+        try { localStorage.setItem('arlington_gemini_api_key', newKey); } catch (error) { console.warn(error); }
     };
 
     const addMultiRoom = () => {
@@ -716,24 +661,23 @@ export default function App() {
     };
 
     const handleRoomInputKeyDown = (e) => {
-        if (e.key === 'Enter') { e.preventDefault(); addMultiRoom(); }
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            addMultiRoom();
+        }
     };
 
     const removeMultiRoom = (rId) => {
         setMultiRoomData(prev => {
             const roomToDelete = prev.find(r => r.id === rId);
-            if (roomToDelete?.images.length > 0) {
+            if (roomToDelete && roomToDelete.images.length > 0) {
                 setUncategorisedImages(existing => [...existing, ...roomToDelete.images]);
             }
             return prev.filter(r => r.id !== rId);
         });
     };
-
-    const updateMultiRoomName = (rId, val) =>
-        setMultiRoomData(prev => prev.map(r => r.id === rId ? { ...r, name: val } : r));
-
-    const handleMultiReportChange = (rId, text) =>
-        setMultiRoomData(prev => prev.map(r => r.id === rId ? { ...r, report: text } : r));
+    const updateMultiRoomName = (rId, val) => setMultiRoomData(prev => prev.map(r => r.id === rId ? { ...r, name: val } : r));
+    const handleMultiReportChange = (rId, text) => setMultiRoomData(prev => prev.map(r => r.id === rId ? { ...r, report: text } : r));
 
     const compressImage = (file) => {
         return new Promise((resolve) => {
@@ -750,11 +694,11 @@ export default function App() {
                     canvas.width = img.width * scale;
                     canvas.height = img.height * scale;
                     canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-                    resolve({
-                        id: newId(),
-                        mimeType: 'image/jpeg',
-                        data: canvas.toDataURL('image/jpeg', 0.6).split(',')[1],
-                        room: ''
+                    resolve({ 
+                        id: newId(), 
+                        mimeType: 'image/jpeg', 
+                        data: canvas.toDataURL('image/jpeg', 0.6).split(',')[1], 
+                        room: '' 
                     });
                 };
             };
@@ -773,11 +717,8 @@ export default function App() {
         e.target.value = '';
     };
 
-    const handleRemoveImage = useCallback((idToRemove) =>
-        setMainImages(prev => prev.filter(img => img.id !== idToRemove)), []);
-
-    const handleImageRoomChange = useCallback((id, newRoomName) =>
-        setMainImages(prev => prev.map(img => img.id === id ? { ...img, room: newRoomName } : img)), []);
+    const handleRemoveImage = useCallback((idToRemove) => setMainImages(prev => prev.filter(img => img.id !== idToRemove)), []);
+    const handleImageRoomChange = useCallback((id, newRoomName) => setMainImages(prev => prev.map(img => img.id === id ? { ...img, room: newRoomName } : img)), []);
 
     const handleBulkImageUpload = async (e) => {
         const files = Array.from(e.target.files);
@@ -788,20 +729,21 @@ export default function App() {
         e.target.value = '';
     };
 
-    const removeUncategorisedImage = (imgId) =>
-        setUncategorisedImages(prev => prev.filter(img => img.id !== imgId));
+    const removeUncategorisedImage = (imgId) => setUncategorisedImages(prev => prev.filter(img => img.id !== imgId));
 
-    const handleRemoveMultiImage = (rId, imgId) =>
+    const handleRemoveMultiImage = (rId, imgId) => {
         setMultiRoomData(prev => prev.map(r => r.id === rId ? { ...r, images: r.images.filter(i => i.id !== imgId) } : r));
+    };
 
     const assignImageToRoom = (imgId, targetRoomId) => {
         if (!targetRoomId) return;
         setUncategorisedImages(prev => {
             const imgToMove = prev.find(img => img.id === imgId);
             if (imgToMove) {
-                setMultiRoomData(rooms => rooms.map(room =>
-                    room.id === targetRoomId ? { ...room, images: [...room.images, imgToMove] } : room
-                ));
+                setMultiRoomData(rooms => rooms.map(room => {
+                    if (room.id === targetRoomId) return { ...room, images: [...room.images, imgToMove] };
+                    return room;
+                }));
             }
             return prev.filter(img => img.id !== imgId);
         });
@@ -822,10 +764,6 @@ export default function App() {
         });
     };
 
-    // --- PDF Generation ---
-    // FIX #10: Track sandbox ref at component level so cleanup is reliable even if tab is backgrounded
-    const pdfSandboxRef = useRef(null);
-
     const handleDownloadPDFWrapper = () => {
         const sourceElement = document.getElementById('printable-report');
         if (!sourceElement || isProcessing) return;
@@ -835,20 +773,16 @@ export default function App() {
         setPdfFallbackMsg('');
 
         let isCompleted = false;
-
-        const cleanup = () => {
-            if (pdfSandboxRef.current && document.body.contains(pdfSandboxRef.current)) {
-                document.body.removeChild(pdfSandboxRef.current);
-                pdfSandboxRef.current = null;
-            }
-        };
+        let sandboxRef = null;
 
         const safetyUnlock = setTimeout(() => {
             if (!isCompleted) {
                 isCompleted = true;
                 setIsProcessing(false);
-                setErrorMsg('PDF engine stalled. Falling back to native print.');
-                cleanup();
+                setErrorMsg("PDF generation stalled. Falling back to native print.");
+                if (sandboxRef && document.body.contains(sandboxRef)) {
+                    document.body.removeChild(sandboxRef);
+                }
                 window.print();
             }
         }, 15000);
@@ -858,13 +792,18 @@ export default function App() {
                 await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
                 if (!window.html2pdf) {
                     isCompleted = true; clearTimeout(safetyUnlock);
-                    setPdfFallbackMsg('PDF library not loaded, using native print instead.');
-                    window.print(); return;
+                    setPdfFallbackMsg("PDF library not loaded, using native print instead."); window.print(); return;
                 }
 
-                const sandbox = document.createElement('div');
-                sandbox.style.cssText = 'position:fixed;left:-9999px;top:0;width:800px;';
-                pdfSandboxRef.current = sandbox;
+                sandboxRef = document.createElement('div');
+                // Use a safer hidden layout approach to avoid crashing html2canvas rendering
+                sandboxRef.style.position = 'absolute';
+                sandboxRef.style.left = '0';
+                sandboxRef.style.top = '0';
+                sandboxRef.style.width = '210mm'; 
+                sandboxRef.style.zIndex = '-9999';
+                sandboxRef.style.opacity = '0';
+                sandboxRef.style.pointerEvents = 'none';
 
                 const clone = sourceElement.cloneNode(true);
                 clone.style.setProperty('--color-gray-900', '#111827');
@@ -875,26 +814,22 @@ export default function App() {
                 clone.style.setProperty('--color-white', '#ffffff');
                 clone.style.color = '#111827';
 
-                sandbox.appendChild(clone);
-                document.body.appendChild(sandbox);
+                sandboxRef.appendChild(clone);
+                document.body.appendChild(sandboxRef);
 
                 let safeFilename = 'Report.pdf';
-                const propStr = currentProperty?.address
-                    ? currentProperty.address.slice(0, 20).replace(/[/\\?%*:|"<>]/g, '_')
-                    : 'Property';
+                const propStr = currentProperty?.address ? currentProperty.address.slice(0, 20).replace(/[/\\?%*:|"<>]/g, '_') : 'Property';
 
                 if (reportType === 'maintenance') {
-                    safeFilename = `Maintenance_${propStr}_${maintenanceMeta.date || 'NoDate'}.pdf`;
+                    const mDate = maintenanceMeta.date || 'NoDate';
+                    safeFilename = `Maintenance_${propStr}_${mDate}.pdf`;
                 } else if (reportType === 'fire_safety') {
-                    safeFilename = `Fire_Safety_${propStr}_${tenancyInfo.dateOfInventory || 'NoDate'}.pdf`;
+                    const mDate = tenancyInfo.dateOfInventory || 'NoDate';
+                    safeFilename = `Fire_Safety_${propStr}_${mDate}.pdf`;
                 } else {
                     const tName = tenancyInfo.tenantName?.trim() || 'Tenant';
-                    const rNum = (reportType === 'checkout' && tenancyInfo.checkoutScope === 'property')
-                        ? 'Full_Property'
-                        : (tenancyInfo.roomIdentifier?.trim() || 'Room');
-                    const mDate = reportType === 'checkout'
-                        ? (tenancyInfo.checkOutDate || 'NoDate')
-                        : (tenancyInfo.moveInDate || 'NoDate');
+                    const rNum = (reportType === 'checkout' && tenancyInfo.checkoutScope === 'property') ? 'Full_Property' : (tenancyInfo.roomIdentifier?.trim() || 'Room');
+                    const mDate = reportType === 'checkout' ? (tenancyInfo.checkOutDate || 'NoDate') : (tenancyInfo.moveInDate || 'NoDate');
                     const filePrefix = reportType === 'checkout' ? 'Checkout' : 'Inventory';
                     safeFilename = `${filePrefix}_${tName}_${rNum}_${mDate}`.replace(/[/\\?%*:|"<>]/g, '_').trim() + '.pdf';
                 }
@@ -904,38 +839,31 @@ export default function App() {
                     filename: safeFilename,
                     image: { type: 'jpeg', quality: 0.98 },
                     html2canvas: { scale: 2, useCORS: true, letterRendering: true, logging: false, imageTimeout: 8000 },
-                    jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
-                    pagebreak: { mode: ['css', 'legacy'], avoid: ['.break-inside-avoid', '.break-inside-avoid-page'] }
+                    jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
                 };
 
-                await window.html2pdf().set(opt).from(clone).save();
+                await window.html2pdf().set(opt).from(sandboxRef).save();
 
-                if (!isCompleted) {
-                    isCompleted = true;
-                    clearTimeout(safetyUnlock);
-                    setIsProcessing(false);
-                    cleanup();
-                }
             } catch (err) {
+                console.error("PDF generation failed:", err); 
+                setErrorMsg("PDF generation failed. Falling back to native print.");
+                window.print();
+            } finally {
                 if (!isCompleted) {
-                    isCompleted = true;
-                    clearTimeout(safetyUnlock);
+                    isCompleted = true; 
+                    clearTimeout(safetyUnlock); 
                     setIsProcessing(false);
-                    console.error('PDF generation failed:', err);
-                    setErrorMsg('PDF generation failed. Falling back to native print.');
-                    cleanup();
-                    window.print();
+                }
+                if (sandboxRef && document.body.contains(sandboxRef)) {
+                    document.body.removeChild(sandboxRef);
                 }
             }
         };
         run();
     };
 
-    // --- AI Analysis Functions ---
-    // FIX #5: analyseStandardImages now uses real progress tracking, not a fake interval
     const triggerProgress = (textPrefix) => {
         setLoadingState({ active: true, progress: 5, text: `${textPrefix}...` });
-        // Fake interval still used for AI analysis only (network timing is opaque here)
         progressIntervalRef.current = setInterval(() => {
             setLoadingState(prev => {
                 if (!prev.active) return prev;
@@ -956,18 +884,18 @@ export default function App() {
         setTimeout(() => setLoadingState({ active: false, progress: 0, text: '' }), 1500);
     };
 
-    const strictConditionInstruction = "Do NOT state that an item is 'present' or 'exists'. The presence of the item is already confirmed by the photograph. Jump straight to describing the condition, quantities, and cleanliness. Pay extremely close attention to detail: explicitly identify, count, and note multiples of items and explicitly describe any defects found. Be professional. Use UK English. Do not use em dashes.";
+    const strictConditionInstruction = "Do NOT state that an item is 'present' or 'exists'. The presence of the item is already confirmed by the photograph. Jump straight to describing the condition, quantities, and cleanliness. Pay extremely close attention to detail: explicitly identify, count, and note multiples of items and explicitly describe any defects found. Be professional. Use UK English.";
 
     const analyseStandardImages = async () => {
-        if (!activeApiKey) return setErrorMsg('Missing API Key.');
-        if (mainImages.length === 0) return setErrorMsg('Please provide at least one image.');
+        if (!activeApiKey || activeApiKey === "STORAGE_ERROR") return setErrorMsg("Missing API Key. Check settings.");
+        if (mainImages.length === 0) return setErrorMsg("Please provide at least one image.");
         setIsAnalysingMain(true);
         setErrorMsg('');
         triggerProgress('Preparing images');
 
         try {
-            let formatConstraint = '';
-            let promptText = '';
+            let formatConstraint = "";
+            let promptText = "";
             const roomName = (tenancyInfo.roomIdentifier || 'tenant room').replace(/[<>"'`]/g, '').slice(0, 100);
 
             if (reportType === 'inventory') {
@@ -1008,14 +936,14 @@ Condition: [Detailed Condition Only]
 
             const payloadParts = [{ text: promptText }];
             mainImages.forEach((img, index) => {
-                const roomContext = img.room?.trim() ? ` (Assigned Room: ${img.room.trim()})` : '';
+                const roomContext = img.room.trim() ? ` (Assigned Room: ${img.room.trim()})` : '';
                 payloadParts.push({ text: `\n[Image ${index + 1}]${roomContext}:` });
                 payloadParts.push({ inlineData: { mimeType: img.mimeType, data: img.data } });
             });
 
-            const payload = { contents: [{ role: 'user', parts: payloadParts }] };
+            const payload = { contents: [{ role: "user", parts: payloadParts }] };
             const data = await callGeminiWithFallback(payload, activeApiKey);
-            setMainReport(data.candidates?.[0]?.content?.parts?.[0]?.text || 'Analysis failed to return text.');
+            setMainReport(data.candidates?.[0]?.content?.parts?.[0]?.text || "Analysis failed to return text.");
             stopProgress();
         } catch (error) {
             console.error(error);
@@ -1028,15 +956,15 @@ Condition: [Detailed Condition Only]
     };
 
     const analyseMultiRoomImages = async (specificRoomId = null) => {
-        if (!activeApiKey) return setErrorMsg('Missing API Key.');
+        if (!activeApiKey || activeApiKey === "STORAGE_ERROR") return setErrorMsg("Missing API Key. Check settings.");
         setIsAnalysingMain(true);
         setErrorMsg('');
-
+        
         let updatedRooms = JSON.parse(JSON.stringify(multiRoomData));
         const tasks = updatedRooms.filter(r => (specificRoomId ? r.id === specificRoomId : true) && r.images.length > 0);
 
         if (tasks.length === 0) {
-            setErrorMsg('No images uploaded to analyse in the selected room(s).');
+            setErrorMsg("No images uploaded to analyse in the selected room(s).");
             setIsAnalysingMain(false);
             return;
         }
@@ -1050,11 +978,11 @@ Condition: [Detailed Condition Only]
                     { inlineData: { mimeType: img.mimeType, data: img.data } }
                 ]).flat();
 
-                let promptText = '';
+                let promptText = "";
                 if (reportType === 'maintenance') {
                     promptText = `Analyse these images showing maintenance issues in ${task.name} at ${currentProperty?.address}. 
 Do NOT state that an item is 'present' or 'exists'. Describe the specific defects, damage, or required repairs clearly and objectively. 
-Format your response using clear bullet points referring to [Image X]. Be professional. Use UK English. Do not use em dashes.`;
+Format your response using clear bullet points referring to [Image X]. Be professional. Use UK English.`;
                 } else if (reportType === 'checkout') {
                     const formatConstraint = `
 **1. General Overview**
@@ -1072,10 +1000,11 @@ Condition: [Detailed Condition Only]
                     promptText = `Analyse these images showing the end of tenancy condition in the ${task.name} at ${currentProperty?.address}. Output EXACTLY in this format using bolding for headings:\n${formatConstraint}\n${strictConditionInstruction}\nConclude with objective recommendations for tenancy deposit deductions based on damage exceeding fair wear and tear.`;
                 }
 
-                const payload = { contents: [{ role: 'user', parts: [{ text: promptText }, ...imageParts] }] };
+                const payload = { contents: [{ role: "user", parts: [{ text: promptText }, ...imageParts] }] };
                 const data = await callGeminiWithFallback(payload, activeApiKey);
+                
                 const rIndex = updatedRooms.findIndex(r => r.id === task.id);
-                if (rIndex !== -1) updatedRooms[rIndex].report = data.candidates?.[0]?.content?.parts?.[0]?.text || 'No actionable defects found.';
+                if (rIndex !== -1) updatedRooms[rIndex].report = data.candidates?.[0]?.content?.parts?.[0]?.text || "No actionable defects found.";
             } catch (err) {
                 console.error(err);
                 const rIndex = updatedRooms.findIndex(r => r.id === task.id);
@@ -1090,14 +1019,15 @@ Condition: [Detailed Condition Only]
     };
 
     const polishStandardText = async () => {
-        if (!mainReport.trim() || !activeApiKey) return;
+        if (!mainReport.trim() || !activeApiKey || activeApiKey === "STORAGE_ERROR") return;
         setIsPolishingMain(true);
         try {
-            const constraint = "Strictly reporting objective conditions only. Never state that an item is 'present' or 'exists' as the photo confirms existence. Use UK English only. No em dashes.";
-            const promptText = reportType === 'inventory'
+            const constraint = "Strictly reporting objective conditions only. Never state that an item is 'present' or 'exists' as the photo confirms existence. Use UK English only.";
+            const promptText = reportType === 'inventory' 
                 ? `Rewrite the following notes highly professionally. ${constraint} DO NOT suggest any improvements or repairs. \n\n${mainReport}`
                 : `Rewrite the following notes highly professionally. ${constraint} Ensure objective recommendations for deposit deductions are preserved. \n\n${mainReport}`;
-            const payload = { contents: [{ role: 'user', parts: [{ text: promptText }] }] };
+            
+            const payload = { contents: [{ role: "user", parts: [{ text: promptText }] }] };
             const data = await callGeminiWithFallback(payload, activeApiKey);
             setMainReport(data.candidates?.[0]?.content?.parts?.[0]?.text || mainReport);
         } catch (error) {
@@ -1108,20 +1038,21 @@ Condition: [Detailed Condition Only]
     };
 
     const polishMultiRoomText = async () => {
-        if (!activeApiKey) return setErrorMsg('Missing API Key.');
+        if (!activeApiKey || activeApiKey === "STORAGE_ERROR") return setErrorMsg("Missing API Key.");
         setIsPolishingMain(true);
         setErrorMsg('');
-
+        
         let updatedRooms = JSON.parse(JSON.stringify(multiRoomData));
-        const tasks = updatedRooms.filter(r => r.report?.trim() !== '');
+        const tasks = updatedRooms.filter(r => r.report && r.report.trim() !== '');
 
         for (const task of tasks) {
             try {
-                const constraint = "Strictly report the objective conditions. Do not state items are present or exist. Use UK English only. No em dashes.";
+                const constraint = "Strictly report the objective conditions. Do not state items are present or exist. Use UK English only.";
                 const promptText = reportType === 'maintenance'
                     ? `Rewrite the following maintenance notes highly professionally. ${constraint} Ensure requested repairs are clear: \n\n${task.report}`
                     : `Rewrite the following check-out notes highly professionally. ${constraint} Ensure objective recommendations for deposit deductions are preserved: \n\n${task.report}`;
-                const payload = { contents: [{ role: 'user', parts: [{ text: promptText }] }] };
+
+                const payload = { contents: [{ role: "user", parts: [{ text: promptText }] }] };
                 const data = await callGeminiWithFallback(payload, activeApiKey);
                 const rIndex = updatedRooms.findIndex(r => r.id === task.id);
                 if (rIndex !== -1) updatedRooms[rIndex].report = data.candidates?.[0]?.content?.parts?.[0]?.text || task.report;
@@ -1152,17 +1083,16 @@ Condition: [Detailed Condition Only]
         });
     };
 
-    const canProceedToStep2 = isMultiRoom
+    const canProceedToStep2 = isMultiRoom 
         ? multiRoomData.length > 0 && multiRoomData.every(r => r.name.trim() !== '') && (reportType === 'checkout' ? tenancyInfo.tenantName.trim() !== '' : true)
-        : reportType === 'fire_safety'
-        ? true
+        : reportType === 'fire_safety' 
+        ? true 
         : tenancyInfo.tenantName.trim() !== '' && tenancyInfo.roomIdentifier.trim() !== '';
 
     const canProceedToStep3 = isMultiRoom
         ? multiRoomData.some(r => r.report.trim() !== '' || r.images.length > 0)
         : reportType === 'fire_safety'
-        // FIX #11: Require at least one alarm section tested OR faults noted — no longer always true
-        ? (fireSafetyData.smoke.tested || fireSafetyData.co.tested || fireSafetyData.heat.tested || fireSafetyData.emergency.tested || fireSafetyData.hasFaults === false)
+        ? (fireSafetyData.signature && fireSafetyData.signature.trim() !== '')
         : mainReport.trim() !== '';
 
     const handleStepClick = (targetStep) => {
@@ -1191,40 +1121,47 @@ Condition: [Detailed Condition Only]
 
             {lightboxImage && (
                 <div className="fixed inset-0 bg-black/90 z-[100] flex items-center justify-center p-4 cursor-zoom-out" onClick={() => setLightboxImage(null)}>
-                    <img
-                        src={lightboxImage.data ? `data:${lightboxImage.mimeType};base64,${lightboxImage.data}` : lightboxImage.url}
-                        className="max-h-[90vh] max-w-[90vw] object-contain rounded-xl shadow-2xl"
-                        alt="Enlarged view"
+                    <img 
+                        src={lightboxImage.data ? `data:${lightboxImage.mimeType};base64,${lightboxImage.data}` : lightboxImage.url} 
+                        className="max-h-[90vh] max-w-[90vw] object-contain rounded-xl shadow-2xl" 
+                        alt="Enlarged view" 
                     />
                 </div>
             )}
 
             <div className="max-w-4xl mx-auto bg-white rounded-xl shadow-lg overflow-hidden print:shadow-none">
 
-                <div className="bg-[#2f314b] text-white p-4 sm:p-6 print:hidden flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-4">
-                    <div className="flex items-center gap-4 cursor-pointer" onClick={goHome}>
-                        <img src={logoSrc} alt="Arlington Park Logo" crossOrigin="anonymous" className="h-10 sm:h-12 object-contain" />
-                        <h1 className="text-xl sm:text-2xl font-bold">Arlington Park Reports</h1>
-                    </div>
-                    {currentProperty?.address && (currentView === 'wizard' || currentView === 'view') && (
-                        <div className="bg-white/10 px-4 py-2 rounded-lg border border-white/20 text-sm font-semibold max-w-md truncate">
-                            <span className="text-white/60 font-normal block text-[11px] uppercase tracking-wider mb-0.5">Active Property</span>
-                            {currentProperty.address}
-                        </div>
-                    )}
-                </div>
+<div className="bg-[#2f314b] text-white p-4 sm:p-6 print:hidden flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-4">
+  <div className="flex items-center gap-4 cursor-pointer" onClick={goHome}>
+    <img src={logoSrc} alt="Arlington Park Logo" crossOrigin="anonymous" className="h-10 sm:h-12 object-contain" />
+    <h1 className="text-xl sm:text-2xl font-bold">Arlington Park Reports</h1>
+  </div>
+  
+  {currentProperty?.address && (currentView === 'wizard' || currentView === 'view') && (
+    <div className="bg-white/10 px-4 py-2 rounded-lg border border-white/20 text-sm font-semibold max-w-md truncate">
+      <span className="text-white/60 font-normal block text-[11px] uppercase tracking-wider mb-0.5">Active Property</span>
+      {currentProperty.address}
+    </div>
+  )}
+</div>
 
-                {/* ─── HOME VIEW ─── */}
                 {currentView === 'home' && (
                     <div className="flex flex-col items-center justify-center space-y-8 py-10 px-6 sm:py-16 bg-gray-50 min-h-[50vh]">
                         <div className="text-center">
                             <h2 className="text-2xl sm:text-3xl font-bold text-gray-800">HMO Properties Database</h2>
                             <p className="text-gray-500 mt-2 font-medium max-w-lg mx-auto">Select a building to manage its Room Lets, Check-Outs, Fire Safety, and Maintenance.</p>
                         </div>
+                        
                         {showAddProperty ? (
                             <div className="w-full max-w-md bg-white p-6 rounded-xl shadow-sm border border-gray-200">
                                 <h3 className="font-bold text-lg mb-4 text-gray-800">Add New HMO Building</h3>
-                                <textarea value={newPropertyAddress} onChange={e => setNewPropertyAddress(e.target.value)} placeholder="e.g. 123 High Street, Norwich NR2 3AD" className="w-full p-3 border border-gray-300 rounded focus:ring-[#2f314b] focus:border-[#2f314b] mb-4" rows="3" />
+                                <textarea 
+                                    value={newPropertyAddress} 
+                                    onChange={e => setNewPropertyAddress(e.target.value)} 
+                                    placeholder="e.g. 123 High Street, Norwich NR2 3AD" 
+                                    className="w-full p-3 border border-gray-300 rounded focus:ring-[#2f314b] focus:border-[#2f314b] mb-4" 
+                                    rows="3"
+                                />
                                 <div className="flex justify-end gap-3">
                                     <button onClick={() => setShowAddProperty(false)} className="px-4 py-2 font-bold text-gray-600 hover:bg-gray-100 rounded transition">Cancel</button>
                                     <button onClick={handleAddNewProperty} className="px-4 py-2 font-bold bg-[#2f314b] text-white rounded hover:bg-[#2f314b]/90 transition">Save Property</button>
@@ -1238,7 +1175,9 @@ Condition: [Detailed Condition Only]
                                             <span className="text-lg font-bold text-gray-800 group-hover:text-[#2f314b]">{prop.address}</span>
                                             <span className="text-[#2f314b] font-bold text-xl ml-4">→</span>
                                         </button>
-                                        <button onClick={(e) => handleDeleteProperty(e, prop.id)} className="absolute top-2 right-2 text-xs font-bold text-red-500 opacity-0 group-hover:opacity-100 hover:text-red-700 transition px-2 py-1 bg-red-50 rounded">Delete</button>
+                                        <button onClick={(e) => handleDeleteProperty(e, prop.id)} className="absolute top-2 right-2 text-xs font-bold text-red-500 opacity-0 group-hover:opacity-100 hover:text-red-700 transition px-2 py-1 bg-red-50 rounded">
+                                            Delete
+                                        </button>
                                     </div>
                                 ))}
                                 <button onClick={() => setShowAddProperty(true)} className="bg-white border-2 border-dashed border-[#2f314b]/30 p-6 rounded-xl hover:border-[#2f314b] hover:bg-[#2f314b]/5 flex flex-col items-center justify-center text-[#2f314b] transition gap-2 min-h-[100px]">
@@ -1250,18 +1189,24 @@ Condition: [Detailed Condition Only]
                     </div>
                 )}
 
-                {/* ─── PORTFOLIO VIEW ─── */}
                 {currentView === 'portfolio' && (
                     <div className="space-y-6 p-6 sm:p-8">
-                        <button onClick={goHome} className="font-bold text-gray-500 hover:text-black mb-2 flex items-center">← Back to Database</button>
+                        <button onClick={goHome} className="font-bold text-gray-500 hover:text-black mb-2 flex items-center">
+                            ← Back to Database
+                        </button>
+                        
                         <div className="bg-[#2f314b] text-white p-6 sm:p-8 rounded-xl shadow-sm">
                             <h2 className="text-2xl sm:text-3xl font-bold leading-tight">{currentProperty?.address}</h2>
                             <p className="text-white/70 mt-2 font-medium tracking-wide uppercase text-sm">Property Portfolio</p>
                         </div>
+                        
                         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mt-8 mb-4 gap-4">
                             <h3 className="text-xl font-bold text-gray-800 border-b-2 border-[#2f314b] pb-1">Saved Reports</h3>
-                            <button onClick={handleStartNewReport} className="bg-[#2f314b] text-white px-6 py-3 rounded-lg font-bold shadow hover:bg-[#2f314b]/90 transition w-full sm:w-auto text-center">+ Create New Report</button>
+                            <button onClick={handleStartNewReport} className="bg-[#2f314b] text-white px-6 py-3 rounded-lg font-bold shadow hover:bg-[#2f314b]/90 transition w-full sm:w-auto text-center">
+                                + Create New Report
+                            </button>
                         </div>
+
                         <div className="space-y-4">
                             {propertyReports.length === 0 ? (
                                 <div className="bg-gray-50 border-2 border-dashed border-gray-300 rounded-xl p-10 text-center">
@@ -1271,21 +1216,30 @@ Condition: [Detailed Condition Only]
                                 propertyReports.map(report => (
                                     <div key={report.id} className="bg-white border border-gray-200 p-5 rounded-xl shadow-sm flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 hover:border-[#2f314b] transition">
                                         <div>
-                                            <p className="font-bold text-gray-900 text-lg uppercase tracking-wide">{formatType(report.reportType)}</p>
+                                            <p className="font-bold text-gray-900 text-lg uppercase tracking-wide">
+                                                {formatType(report.reportType)}
+                                            </p>
                                             <p className="text-sm font-bold text-[#2f314b] mt-1 mb-1">
-                                                {report.reportType === 'inventory' || (report.reportType === 'checkout' && report.data.tenancyInfo?.checkoutScope === 'room')
-                                                    ? `Room Let: ${report.data.tenancyInfo?.roomIdentifier || 'N/A'} (${report.data.tenancyInfo?.tenantName || 'N/A'})`
+                                                {report.reportType === 'inventory' || (report.reportType === 'checkout' && report.data.tenancyInfo?.checkoutScope === 'room') 
+                                                    ? `Room Let: ${report.data.tenancyInfo?.roomIdentifier || 'N/A'} (${report.data.tenancyInfo?.tenantName || 'N/A'})` 
                                                     : 'Entire Property Scope'}
                                             </p>
                                             <p className="text-sm text-gray-600 mt-1">
-                                                <span className="font-semibold text-gray-500">{formatOrdinalDate(report.reportDate)}</span>
-                                                <span className="mx-2 hidden sm:inline">|</span>
+                                                <span className="font-semibold text-gray-500">{formatOrdinalDate(report.reportDate)}</span> 
+                                                <span className="mx-2 hidden sm:inline">|</span> 
                                                 <span className="block sm:inline mt-1 sm:mt-0">Inspector: {report.inspectorName || 'Not specified'}</span>
                                             </p>
                                         </div>
-                                        <div className="flex gap-4 w-full sm:w-auto border-t sm:border-0 pt-3 sm:pt-0">
-                                            <button onClick={() => handleViewSavedReport(report.id)} className="flex-1 sm:flex-none text-[#2f314b] bg-[#2f314b]/10 px-4 py-2 rounded font-bold hover:bg-[#2f314b]/20 transition text-center">View PDF</button>
-                                            <button onClick={() => handleDeleteReport(report.id)} className="flex-1 sm:flex-none text-red-600 bg-red-50 px-4 py-2 rounded font-bold hover:bg-red-100 transition text-center">Delete</button>
+                                        <div className="flex flex-wrap gap-2 w-full sm:w-auto border-t sm:border-0 pt-3 sm:pt-0">
+                                            <button onClick={() => handleViewSavedReport(report.id)} className="flex-1 sm:flex-none text-[#2f314b] bg-[#2f314b]/10 px-4 py-2 rounded font-bold hover:bg-[#2f314b]/20 transition text-center">
+                                                View
+                                            </button>
+                                            <button onClick={() => handleUseAsTemplate(report.id)} className="flex-1 sm:flex-none text-blue-600 bg-blue-50 px-4 py-2 rounded font-bold hover:bg-blue-100 transition text-center">
+                                                Use as Template
+                                            </button>
+                                            <button onClick={() => handleDeleteReport(report.id)} className="flex-1 sm:flex-none text-red-600 bg-red-50 px-4 py-2 rounded font-bold hover:bg-red-100 transition text-center">
+                                                Delete
+                                            </button>
                                         </div>
                                     </div>
                                 ))
@@ -1294,7 +1248,6 @@ Condition: [Detailed Condition Only]
                     </div>
                 )}
 
-                {/* ─── WIZARD OR VIEW REPORT ─── */}
                 {(currentView === 'wizard' || currentView === 'view') && (
                     <>
                         {currentView === 'wizard' && step > 0 && (
@@ -1309,7 +1262,6 @@ Condition: [Detailed Condition Only]
 
                         <div className="p-6 sm:p-8">
 
-                            {/* STEP 0: Report Type Selection */}
                             {currentView === 'wizard' && step === 0 && (
                                 <div className="flex flex-col items-center justify-center space-y-8 py-8 sm:py-12">
                                     <div className="w-full flex justify-between items-center mb-4">
@@ -1317,7 +1269,7 @@ Condition: [Detailed Condition Only]
                                     </div>
                                     <h2 className="text-2xl sm:text-3xl font-bold text-gray-800 text-center border-b-4 border-[#2f314b] pb-2">Select a Report Type</h2>
                                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 w-full max-w-6xl">
-                                        <button onClick={() => { setReportType('inventory'); setTenancyInfo(prev => ({ ...prev, checkoutScope: 'room' })); setStep(1); }} className="bg-white border border-gray-200 p-6 rounded-xl hover:border-[#2f314b] hover:shadow-md transition group flex flex-col items-center gap-3">
+                                        <button onClick={() => { setReportType('inventory'); setTenancyInfo(prev => ({...prev, checkoutScope: 'room'})); setStep(1); }} className="bg-white border border-gray-200 p-6 rounded-xl hover:border-[#2f314b] hover:shadow-md transition group flex flex-col items-center gap-3">
                                             <span className="text-lg font-bold text-[#2f314b] text-center uppercase tracking-wide">Initial Condition</span>
                                             <span className="text-xs text-center text-gray-500 font-medium">Standard inventory for room lets.</span>
                                         </button>
@@ -1337,7 +1289,6 @@ Condition: [Detailed Condition Only]
                                 </div>
                             )}
 
-                            {/* STEP 1: Details */}
                             {currentView === 'wizard' && step === 1 && (
                                 <div className="space-y-6">
                                     <div className="flex justify-between items-center mb-6">
@@ -1373,14 +1324,18 @@ Condition: [Detailed Condition Only]
                                                     <label className="block text-sm font-bold text-gray-700 mb-2">Property Address</label>
                                                     <textarea disabled value={currentProperty?.address || ''} className="w-full p-3 border border-gray-200 rounded-lg bg-gray-100 text-gray-600 cursor-not-allowed font-medium" rows="2" />
                                                 </div>
-                                                <div>
-                                                    <label className="block text-sm font-bold text-gray-700 mb-2">Room Name <span className="text-red-500">*</span></label>
-                                                    <input type="text" name="roomIdentifier" value={tenancyInfo.roomIdentifier} onChange={handleTenancyChange} className="w-full p-3 border border-gray-300 rounded-lg focus:ring-[#2f314b] focus:border-[#2f314b] font-medium" placeholder="e.g. Master Bedroom" />
-                                                    <div className="flex items-center mt-3 ml-1">
-                                                        <input type="checkbox" id="hasEnsuite" name="hasEnsuite" checked={tenancyInfo.hasEnsuite || false} onChange={handleTenancyChange} className="h-5 w-5 text-[#2f314b] focus:ring-[#2f314b] border-gray-300 rounded cursor-pointer" />
-                                                        <label htmlFor="hasEnsuite" className="ml-3 block text-sm font-bold text-gray-700 cursor-pointer">Includes En-suite Bathroom</label>
+
+                                                {(reportType === 'inventory' || tenancyInfo.checkoutScope === 'room') && (
+                                                    <div>
+                                                        <label className="block text-sm font-bold text-gray-700 mb-2">Room Name <span className="text-red-500">*</span></label>
+                                                        <input type="text" name="roomIdentifier" value={tenancyInfo.roomIdentifier} onChange={handleTenancyChange} className="w-full p-3 border border-gray-300 rounded-lg focus:ring-[#2f314b] focus:border-[#2f314b] font-medium" placeholder="e.g. Master Bedroom" />
+                                                        <div className="flex items-center mt-3 ml-1">
+                                                            <input type="checkbox" id="hasEnsuite" name="hasEnsuite" checked={tenancyInfo.hasEnsuite || false} onChange={handleTenancyChange} className="h-5 w-5 text-[#2f314b] focus:ring-[#2f314b] border-gray-300 rounded cursor-pointer" />
+                                                            <label htmlFor="hasEnsuite" className="ml-3 block text-sm font-bold text-gray-700 cursor-pointer">Includes En-suite Bathroom</label>
+                                                        </div>
                                                     </div>
-                                                </div>
+                                                )}
+
                                                 <div>
                                                     <label className="block text-sm font-bold text-gray-700 mb-2">Tenant Name(s) <span className="text-red-500">*</span></label>
                                                     <input type="text" name="tenantName" value={tenancyInfo.tenantName} onChange={handleTenancyChange} className="w-full p-3 border border-gray-300 rounded-lg focus:ring-[#2f314b] focus:border-[#2f314b] font-medium" />
@@ -1460,19 +1415,21 @@ Condition: [Detailed Condition Only]
                                                 {multiRoomData.map((room, idx) => (
                                                     <div key={room.id} className="flex items-center gap-3 bg-gray-50 p-3 rounded-lg border border-gray-200">
                                                         <span className="font-bold text-gray-400 w-6 text-center">{idx + 1}.</span>
-                                                        <input
-                                                            type="text"
-                                                            value={room.name}
-                                                            onChange={(e) => updateMultiRoomName(room.id, e.target.value)}
+                                                        <input 
+                                                            type="text" 
+                                                            value={room.name} 
+                                                            onChange={(e) => updateMultiRoomName(room.id, e.target.value)} 
                                                             onKeyDown={handleRoomInputKeyDown}
-                                                            placeholder="e.g. Kitchen, Bedroom 1, En-suite Bathroom"
+                                                            placeholder="e.g. Kitchen, Bedroom 1, En-suite Bathroom" 
                                                             className="flex-1 p-3 border border-gray-300 rounded-lg focus:ring-[#2f314b] font-medium bg-white"
                                                             ref={el => roomInputRefs.current[room.id] = el}
                                                         />
                                                         <button onClick={() => removeMultiRoom(room.id)} className="text-red-500 hover:bg-red-100 hover:text-red-700 px-4 py-3 rounded-lg text-sm font-bold transition">Delete</button>
                                                     </div>
                                                 ))}
-                                                <button onClick={addMultiRoom} className="mt-4 text-sm text-[#2f314b] font-bold bg-[#2f314b]/10 px-5 py-3 rounded-lg hover:bg-[#2f314b]/20 transition inline-block">+ Add Another Room</button>
+                                                <button onClick={addMultiRoom} className="mt-4 text-sm text-[#2f314b] font-bold bg-[#2f314b]/10 px-5 py-3 rounded-lg hover:bg-[#2f314b]/20 transition inline-block">
+                                                    + Add Another Room
+                                                </button>
                                             </div>
                                         </div>
                                     )}
@@ -1482,7 +1439,7 @@ Condition: [Detailed Condition Only]
                                             <div className="space-y-6">
                                                 <div>
                                                     <label className="block text-sm font-bold text-gray-700 mb-2">Property Address</label>
-                                                    <textarea disabled value={currentProperty?.address || ''} className="w-full p-3 border border-gray-200 rounded-lg bg-gray-100 text-gray-600 cursor-not-allowed font-medium" rows="2" />
+                                                    <textarea disabled value={currentProperty?.address || ''} className="w-full p-3 border border-gray-200 rounded-lg bg-gray-100 text-gray-600 cursor-not-allowed font-medium" rows="2"/>
                                                 </div>
                                             </div>
                                             <div className="space-y-6 bg-gray-50 p-6 rounded-xl border border-gray-100">
@@ -1508,7 +1465,6 @@ Condition: [Detailed Condition Only]
                                 </div>
                             )}
 
-                            {/* STEP 2: Analysis / Forms */}
                             {currentView === 'wizard' && step === 2 && (
                                 <div className="space-y-8">
                                     {errorMsg && <div className="p-4 bg-red-50 text-red-700 rounded-lg text-sm border-2 border-red-200 font-bold">{errorMsg}</div>}
@@ -1516,6 +1472,7 @@ Condition: [Detailed Condition Only]
                                     {!isMultiRoom && (reportType === 'inventory' || reportType === 'checkout') && (
                                         <div className="bg-white border-2 border-gray-100 p-6 sm:p-8 rounded-xl shadow-sm">
                                             <h3 className="text-xl font-bold text-gray-900 mb-6 border-b-2 border-gray-100 pb-2 uppercase tracking-wide">Photographic Analysis</h3>
+                                            
                                             <div className="p-6 border-2 border-dashed border-[#2f314b]/30 rounded-xl bg-gray-50 mb-8 transition hover:bg-gray-100">
                                                 <input type="file" multiple accept="image/*" onChange={handleImageUpload} className="block w-full text-sm text-gray-500 file:mr-6 file:py-3 file:px-6 file:rounded-lg file:border-0 file:text-sm file:font-bold file:bg-[#2f314b] file:text-white hover:file:bg-[#2f314b]/90 cursor-pointer" />
                                                 {mainImages.length > 0 && <p className="text-sm text-green-600 mt-4 font-bold">{mainImages.length} image{mainImages.length !== 1 ? 's' : ''} securely loaded and compressed.</p>}
@@ -1526,10 +1483,10 @@ Condition: [Detailed Condition Only]
                                                     {mainImages.map((img, idx) => (
                                                         <div key={img.id} className="relative group rounded-xl overflow-hidden border-2 border-gray-200 flex flex-col bg-white">
                                                             <div className="relative">
-                                                                <img
-                                                                    src={img.data ? `data:${img.mimeType};base64,${img.data}` : img.url}
-                                                                    alt={`Upload ${idx + 1}`}
-                                                                    className="w-full h-32 object-cover cursor-zoom-in"
+                                                                <img 
+                                                                    src={img.data ? `data:${img.mimeType};base64,${img.data}` : img.url} 
+                                                                    alt={`Upload ${idx + 1}`} 
+                                                                    className="w-full h-32 object-cover cursor-zoom-in" 
                                                                     onClick={() => setLightboxImage(img)}
                                                                 />
                                                                 <div className="absolute inset-0 bg-black/40 transition opacity-0 group-hover:opacity-100 flex items-center justify-center pointer-events-none">
@@ -1576,12 +1533,15 @@ Condition: [Detailed Condition Only]
 
                                     {isMultiRoom && (
                                         <div className="space-y-6">
+                                            
                                             <div className="bg-white border-2 border-gray-100 p-6 rounded-xl shadow-sm">
                                                 <h3 className="text-xl font-bold text-gray-900 border-b-2 border-gray-200 pb-2 mb-4">Master Photo Upload</h3>
                                                 <p className="text-sm text-gray-500 mb-4 font-medium">Upload all your photos here in bulk, then use the dropdown beneath each photo to allocate it to the correct room.</p>
+                                                
                                                 <div className="p-4 border-2 border-dashed border-[#2f314b]/30 rounded-xl bg-gray-50 mb-6 transition hover:bg-gray-100">
                                                     <input type="file" multiple accept="image/*" onChange={handleBulkImageUpload} className="block w-full text-sm text-gray-500 file:mr-6 file:py-3 file:px-6 file:rounded-lg file:border-0 file:text-sm file:font-bold file:bg-[#2f314b] file:text-white hover:file:bg-[#2f314b]/90 cursor-pointer" />
                                                 </div>
+
                                                 <div className="min-h-[120px] bg-gray-50 border-2 border-dashed border-gray-300 rounded-xl p-4 transition-colors">
                                                     <h4 className="text-sm font-bold text-gray-700 uppercase tracking-wide mb-3">Uncategorised Photos</h4>
                                                     {uncategorisedImages.length === 0 ? (
@@ -1590,11 +1550,27 @@ Condition: [Detailed Condition Only]
                                                         <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-4">
                                                             {uncategorisedImages.map((img) => (
                                                                 <div key={img.id} className="relative group rounded-lg overflow-hidden border border-gray-300 shadow-sm flex flex-col bg-white">
-                                                                    <img src={img.data ? `data:${img.mimeType};base64,${img.data}` : img.url} className="w-full h-24 object-cover cursor-zoom-in" onClick={() => setLightboxImage(img)} alt="Uncategorised upload" />
-                                                                    <button onClick={() => removeUncategorisedImage(img.id)} className="absolute top-1 right-1 bg-red-600/90 text-white text-[10px] px-2 py-1 rounded font-bold opacity-0 group-hover:opacity-100 transition shadow-sm">Del</button>
-                                                                    <select className="text-[10px] font-bold p-2 border-t border-gray-300 w-full focus:ring-[#2f314b] focus:outline-none bg-gray-50 hover:bg-gray-100 cursor-pointer text-gray-700" onChange={(e) => assignImageToRoom(img.id, e.target.value)} defaultValue="">
+                                                                    <img 
+                                                                        src={img.data ? `data:${img.mimeType};base64,${img.data}` : img.url} 
+                                                                        className="w-full h-24 object-cover cursor-zoom-in" 
+                                                                        onClick={() => setLightboxImage(img)}
+                                                                        alt="Uncategorised upload"
+                                                                    />
+                                                                    <button 
+                                                                        onClick={() => removeUncategorisedImage(img.id)} 
+                                                                        className="absolute top-1 right-1 bg-red-600/90 text-white text-[10px] px-2 py-1 rounded font-bold opacity-0 group-hover:opacity-100 transition shadow-sm"
+                                                                    >
+                                                                        Del
+                                                                    </button>
+                                                                    <select
+                                                                        className="text-[10px] font-bold p-2 border-t border-gray-300 w-full focus:ring-[#2f314b] focus:outline-none bg-gray-50 hover:bg-gray-100 cursor-pointer text-gray-700"
+                                                                        onChange={(e) => assignImageToRoom(img.id, e.target.value)}
+                                                                        defaultValue=""
+                                                                    >
                                                                         <option value="" disabled>Assign to...</option>
-                                                                        {multiRoomData.map(r => (<option key={r.id} value={r.id}>{r.name || 'Unnamed Room'}</option>))}
+                                                                        {multiRoomData.map(r => (
+                                                                            <option key={r.id} value={r.id}>{r.name || 'Unnamed Room'}</option>
+                                                                        ))}
                                                                     </select>
                                                                 </div>
                                                             ))}
@@ -1627,21 +1603,50 @@ Condition: [Detailed Condition Only]
                                                         <div className="flex flex-col sm:flex-row justify-between sm:items-center mb-6 border-b-2 border-gray-200 pb-3 gap-4">
                                                             <h5 className="font-bold text-gray-800 text-xl">{room.name || 'Unnamed Room'}</h5>
                                                             <div className="flex gap-2 w-full sm:w-auto">
-                                                                <button onClick={() => handleMultiReportChange(room.id, reportType === 'maintenance' ? 'No maintenance required.' : 'No issues identified.')} className="text-xs bg-green-100 text-green-700 border border-green-300 px-4 py-2 rounded-lg font-bold hover:bg-green-200 transition shadow-sm flex-1 sm:flex-none text-center">No Issues</button>
-                                                                <button onClick={() => analyseMultiRoomImages(room.id)} disabled={isAnalysingMain || room.images.length === 0} className="text-xs bg-[#2f314b] text-white px-4 py-2 rounded-lg font-bold hover:bg-[#2f314b]/90 transition shadow-sm disabled:opacity-50 disabled:cursor-not-allowed flex-1 sm:flex-none text-center">Generate Report</button>
+                                                                <button
+                                                                    onClick={() => handleMultiReportChange(room.id, reportType === 'maintenance' ? 'No maintenance required.' : 'No issues identified.')}
+                                                                    className="text-xs bg-green-100 text-green-700 border border-green-300 px-4 py-2 rounded-lg font-bold hover:bg-green-200 transition shadow-sm flex-1 sm:flex-none text-center"
+                                                                >
+                                                                    No Issues
+                                                                </button>
+                                                                <button 
+                                                                    onClick={() => analyseMultiRoomImages(room.id)} 
+                                                                    disabled={isAnalysingMain || room.images.length === 0} 
+                                                                    className="text-xs bg-[#2f314b] text-white px-4 py-2 rounded-lg font-bold hover:bg-[#2f314b]/90 transition shadow-sm disabled:opacity-50 disabled:cursor-not-allowed flex-1 sm:flex-none text-center"
+                                                                >
+                                                                    Generate Report
+                                                                </button>
                                                             </div>
                                                         </div>
-
+                                                        
                                                         {room.images.length > 0 ? (
                                                             <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-4 mb-6">
                                                                 {room.images.map((img, idx) => (
                                                                     <div key={img.id} className="relative group rounded-lg overflow-hidden border border-gray-300 shadow-sm flex flex-col bg-white">
-                                                                        <img src={img.data ? `data:${img.mimeType};base64,${img.data}` : img.url} className="w-full h-24 object-cover cursor-zoom-in" onClick={() => setLightboxImage(img)} alt={`Assigned to ${room.name}`} />
+                                                                        <img 
+                                                                            src={img.data ? `data:${img.mimeType};base64,${img.data}` : img.url} 
+                                                                            className="w-full h-24 object-cover cursor-zoom-in" 
+                                                                            onClick={() => setLightboxImage(img)}
+                                                                            alt={`Assigned to ${room.name}`}
+                                                                        />
+                                                                        
                                                                         <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition flex flex-col items-center justify-center gap-2 pointer-events-none z-10">
-                                                                            <button onClick={() => moveImageToUncategorised(room.id, img.id)} className="bg-white/90 text-gray-800 text-[10px] px-3 py-1.5 rounded font-bold pointer-events-auto hover:bg-white shadow-sm">Unassign</button>
-                                                                            <button onClick={() => handleRemoveMultiImage(room.id, img.id)} className="bg-red-600/90 text-white text-[10px] px-3 py-1.5 rounded font-bold pointer-events-auto hover:bg-red-700 shadow-sm">Delete</button>
+                                                                            <button 
+                                                                                onClick={() => moveImageToUncategorised(room.id, img.id)} 
+                                                                                className="bg-white/90 text-gray-800 text-[10px] px-3 py-1.5 rounded font-bold pointer-events-auto hover:bg-white shadow-sm"
+                                                                            >
+                                                                                Unassign
+                                                                            </button>
+                                                                            <button 
+                                                                                onClick={() => handleRemoveMultiImage(room.id, img.id)} 
+                                                                                className="bg-red-600/90 text-white text-[10px] px-3 py-1.5 rounded font-bold pointer-events-auto hover:bg-red-700 shadow-sm"
+                                                                            >
+                                                                                Delete
+                                                                            </button>
                                                                         </div>
-                                                                        <div className="absolute bottom-0 left-0 right-0 bg-black/70 text-white text-[9px] font-bold uppercase text-center py-0.5 pointer-events-none z-0">Image {idx + 1}</div>
+                                                                        <div className="absolute bottom-0 left-0 right-0 bg-black/70 text-white text-[9px] font-bold uppercase text-center py-0.5 pointer-events-none z-0">
+                                                                            Image {idx + 1}
+                                                                        </div>
                                                                     </div>
                                                                 ))}
                                                             </div>
@@ -1653,11 +1658,14 @@ Condition: [Detailed Condition Only]
                                                         )}
 
                                                         <div className="mt-4">
-                                                            <label className="text-sm font-bold text-gray-700 block mb-2 uppercase tracking-wide">{reportType === 'maintenance' ? 'Identified Issues:' : 'Room Report:'}</label>
+                                                            <label className="text-sm font-bold text-gray-700 block mb-2 uppercase tracking-wide">
+                                                                {reportType === 'maintenance' ? 'Identified Issues:' : 'Room Report:'}
+                                                            </label>
                                                             <textarea value={room.report} onChange={(e) => handleMultiReportChange(room.id, e.target.value)} className="w-full p-4 border-2 border-gray-200 rounded-xl text-sm bg-white focus:ring-[#2f314b] font-mono leading-relaxed" rows="5" placeholder="Upload images and run AI analysis, or type notes manually..." />
                                                         </div>
                                                     </div>
                                                 ))}
+
                                                 <div className="flex justify-end pt-4 border-t-2 border-gray-100">
                                                     <button onClick={polishMultiRoomText} disabled={isPolishingMain} className="text-sm bg-[#2f314b]/10 text-[#2f314b] px-6 py-3 rounded-xl font-bold hover:bg-[#2f314b]/20 transition shadow-sm">
                                                         {isPolishingMain ? 'Polishing...' : '✨ Polish All Texts Objectively'}
@@ -1670,6 +1678,7 @@ Condition: [Detailed Condition Only]
                                     {reportType === 'fire_safety' && (
                                         <div className="bg-white border-2 border-gray-100 p-6 sm:p-8 rounded-xl shadow-sm">
                                             <h3 className="text-xl font-bold text-gray-900 mb-6 border-b-2 border-gray-100 pb-2 uppercase tracking-wide">Fire Safety Equipment Checks</h3>
+                                            
                                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                                 <AlarmSection title="Smoke Detectors" config={fireSafetyData.smoke} setConfig={(val) => setFireSafetyData(prev => ({ ...prev, smoke: val }))} />
                                                 <AlarmSection title="CO Alarms" config={fireSafetyData.co} setConfig={(val) => setFireSafetyData(prev => ({ ...prev, co: val }))} />
@@ -1691,7 +1700,7 @@ Condition: [Detailed Condition Only]
                                                 </div>
 
                                                 {fireSafetyData.hasFaults && (
-                                                    <div className="space-y-6 pt-6 border-t-2 border-gray-200">
+                                                    <div className="space-y-6 pt-6 border-t-2 border-gray-200 animate-in fade-in">
                                                         <div>
                                                             <label className="block text-sm font-bold text-gray-800 mb-2 uppercase tracking-wide">Fault Details <span className="text-red-600">*</span></label>
                                                             <textarea rows="3" required placeholder="Detail the faults found during testing." value={fireSafetyData.faults} onChange={(e) => setFireSafetyData(prev => ({ ...prev, faults: e.target.value }))} className="w-full border-2 border-gray-300 rounded-xl p-4 text-sm font-medium focus:ring-[#2f314b]" />
@@ -1706,7 +1715,7 @@ Condition: [Detailed Condition Only]
                                                                 <span className="font-bold text-gray-900 text-lg">Fault Resolved?</span>
                                                             </label>
                                                             {fireSafetyData.isResolved && (
-                                                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-white p-5 rounded-xl border border-gray-200 shadow-sm">
+                                                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-white p-5 rounded-xl border border-gray-200 shadow-sm animate-in fade-in">
                                                                     <div>
                                                                         <label className="block text-sm font-bold text-gray-700 mb-2">Date and Time of Resolution <span className="text-red-600">*</span></label>
                                                                         <input type="datetime-local" required value={fireSafetyData.resolvedDate} onChange={(e) => setFireSafetyData(prev => ({ ...prev, resolvedDate: e.target.value }))} className="w-full border border-gray-300 rounded-lg p-3 text-sm focus:ring-[#2f314b] font-medium" />
@@ -1723,11 +1732,6 @@ Condition: [Detailed Condition Only]
                                             </div>
 
                                             <SignaturePad initialData={fireSafetyData.signature} onSignatureEnd={(sig) => setFireSafetyData(prev => ({ ...prev, signature: sig }))} />
-
-                                            {/* FIX #11: Show hint when fire safety form is incomplete */}
-                                            {!canProceedToStep3 && (
-                                                <p className="text-sm font-bold text-amber-600 mt-2">Please test at least one alarm type or confirm no faults before proceeding.</p>
-                                            )}
                                         </div>
                                     )}
 
@@ -1737,22 +1741,22 @@ Condition: [Detailed Condition Only]
                                             Proceed to Final Review →
                                         </button>
                                     </div>
-                                    {!canProceedToStep3 && reportType !== 'fire_safety' && <p className="text-sm font-bold text-red-500 text-right mt-2">Ensure reports contain text or images before review.</p>}
+                                    {!canProceedToStep3 && <p className="text-sm font-bold text-red-500 text-right mt-2">Ensure reports contain text/images, and safety checks are signed.</p>}
                                 </div>
                             )}
+
                         </div>
                     </>
                 )}
 
-                {/* ─── STEP 3: REVIEW / PDF ─── */}
-                {((currentView === 'wizard' && step === 3) || currentView === 'view') ? (
+                {(currentView === 'wizard' && step === 3) || currentView === 'view' ? (
                     <div className="p-6 sm:p-8 bg-gray-50 border-t border-gray-200">
                         {pdfFallbackMsg && (
                             <div className="p-4 bg-amber-50 text-amber-800 rounded-xl text-sm border-2 border-amber-200 print:hidden mb-6 font-bold">{pdfFallbackMsg}</div>
                         )}
-
+                        
                         {loadingState.active && (
-                            <div className="bg-[#2f314b]/5 p-5 rounded-xl border border-[#2f314b]/10 mb-6 print:hidden">
+                            <div className="bg-[#2f314b]/5 p-5 rounded-xl border border-[#2f314b]/10 mb-6 print:hidden animate-in fade-in">
                                 <div className="flex justify-between text-sm text-[#2f314b] font-bold mb-3 uppercase tracking-wider">
                                     <span>{loadingState.text}</span><span>{Math.round(loadingState.progress)}%</span>
                                 </div>
@@ -1763,7 +1767,9 @@ Condition: [Detailed Condition Only]
                         )}
 
                         {errorMsg && (
-                            <div className="p-4 bg-red-50 text-red-700 rounded-xl text-sm border-2 border-red-200 mb-6 print:hidden font-bold">{errorMsg}</div>
+                            <div className="p-4 bg-red-50 text-red-700 rounded-xl text-sm border-2 border-red-200 mb-6 print:hidden font-bold">
+                                {errorMsg}
+                            </div>
                         )}
 
                         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 print:hidden mb-8">
@@ -1781,7 +1787,10 @@ Condition: [Detailed Condition Only]
                                 </>
                             ) : (
                                 <>
-                                    <button onClick={goPortfolio} disabled={isProcessing} className="text-gray-600 px-6 py-3 font-bold hover:bg-gray-200 rounded-xl transition disabled:opacity-50">← Back to Portfolio</button>
+                                    <div className="flex gap-3">
+                                        <button onClick={goPortfolio} disabled={isProcessing} className="text-gray-600 px-6 py-3 font-bold hover:bg-gray-200 rounded-xl transition disabled:opacity-50">← Back to Portfolio</button>
+                                        <button onClick={handleEditReport} disabled={isProcessing} className="text-[#2f314b] bg-[#2f314b]/10 px-6 py-3 font-bold hover:bg-[#2f314b]/20 rounded-xl transition disabled:opacity-50">Edit Report</button>
+                                    </div>
                                     <button onClick={handleDownloadPDFWrapper} disabled={isProcessing} className="bg-[#2f314b] text-white px-8 py-3 rounded-xl font-bold shadow hover:bg-[#2f314b]/90 transition disabled:opacity-50 w-full sm:w-auto text-center">
                                         {isProcessing ? 'Generating...' : 'Download PDF'}
                                     </button>
@@ -1789,17 +1798,8 @@ Condition: [Detailed Condition Only]
                             )}
                         </div>
 
-                        {/* FIX #6: localStorage warning banner */}
-                        {localStorageUnavailable && (
-                            <div className="p-4 bg-amber-50 text-amber-800 rounded-xl text-sm border-2 border-amber-200 print:hidden mb-6 font-bold">
-                                ⚠ Your browser is blocking local storage (private browsing mode?). Your API key will not be saved between sessions.
-                            </div>
-                        )}
+                        <div className="bg-white p-10 print:p-0 max-w-[210mm] mx-auto shadow-lg border border-gray-200 text-gray-900" id="printable-report" style={{ fontFamily: "Arial, sans-serif" }}>
 
-                        {/* PRINTABLE PDF AREA */}
-                        <div className="bg-white p-10 print:p-0 max-w-[210mm] mx-auto shadow-lg border border-gray-200 text-gray-900" id="printable-report" style={{ fontFamily: 'Arial, sans-serif' }}>
-
-                            {/* Single Room Inventory / Checkout PDF */}
                             {!isMultiRoom && (reportType === 'inventory' || reportType === 'checkout') && (
                                 <>
                                     <div className="mb-8 text-center flex flex-col items-center border-b-2 border-gray-100 pb-6">
@@ -1808,14 +1808,19 @@ Condition: [Detailed Condition Only]
                                             {reportType === 'checkout' ? 'Check-Out Report & Schedule of Condition' : 'Property Inventory & Schedule of Condition'}
                                         </h2>
                                     </div>
+
                                     <div className="grid grid-cols-1 gap-2 mb-8 text-[12px] bg-gray-50 p-4 rounded-lg border border-gray-200">
                                         <div className="flex"><span className="w-48 font-bold text-gray-600 uppercase tracking-wide">Property Address:</span><span className="font-bold">{tenancyInfo.roomIdentifier ? `${tenancyInfo.roomIdentifier}, ` : ''}{currentProperty?.address || ''}</span></div>
-                                        <div className="flex"><span className="w-48 font-bold text-gray-600 uppercase tracking-wide">Tenant Name:</span><span className="font-medium">{tenancyInfo.tenantName || ''}</span></div>
-                                        <div className="flex"><span className="w-48 font-bold text-gray-600 uppercase tracking-wide">{reportType === 'checkout' ? 'Check-out Date:' : 'Move-in Date:'}</span><span className="font-medium">{formatOrdinalDate(reportType === 'checkout' ? tenancyInfo.checkOutDate : tenancyInfo.moveInDate)}</span></div>
-                                        <div className="flex"><span className="w-48 font-bold text-gray-600 uppercase tracking-wide">Inspection Date:</span><span className="font-medium">{formatOrdinalDate(tenancyInfo.dateOfInventory)}</span></div>
-                                        <div className="flex"><span className="w-48 font-bold text-gray-600 uppercase tracking-wide">Inspected By:</span><span className="font-medium">{tenancyInfo.clerkName || ''}</span></div>
+                                        <div className="flex"><span className="w-48 font-bold text-gray-600 uppercase tracking-wide">Tenant Name:</span> <span className="font-medium">{tenancyInfo.tenantName || ''}</span></div>
+                                        <div className="flex"><span className="w-48 font-bold text-gray-600 uppercase tracking-wide">{reportType === 'checkout' ? 'Check-out Date:' : 'Move-in Date:'}</span> <span className="font-medium">{formatOrdinalDate(reportType === 'checkout' ? tenancyInfo.checkOutDate : tenancyInfo.moveInDate)}</span></div>
+                                        <div className="flex"><span className="w-48 font-bold text-gray-600 uppercase tracking-wide">Inspection Date:</span> <span className="font-medium">{formatOrdinalDate(tenancyInfo.dateOfInventory)}</span></div>
+                                        <div className="flex"><span className="w-48 font-bold text-gray-600 uppercase tracking-wide">Inspected By:</span> <span className="font-medium">{tenancyInfo.clerkName || ''}</span></div>
                                     </div>
-                                    <div className="mb-10 text-[12px]">{renderReportText(mainReport)}</div>
+
+                                    <div className="mb-10 text-[12px]">
+                                        {renderReportText(mainReport)}
+                                    </div>
+
                                     <div className="mt-8 break-inside-avoid bg-gray-50 p-6 rounded-lg border border-gray-200">
                                         <h3 className="text-[14px] font-black mb-4 uppercase tracking-wide border-b border-gray-300 pb-2">Declaration</h3>
                                         <p className="text-[12px] mb-8 font-medium">This report is a fair and accurate representation of the property at the time of inspection.</p>
@@ -1824,6 +1829,7 @@ Condition: [Detailed Condition Only]
                                             <p><strong className="uppercase text-gray-600 mr-2">Date:</strong> <span className="border-b border-black inline-block w-64 pb-1">{formatOrdinalDate(tenancyInfo.dateOfInventory) || ''}</span></p>
                                         </div>
                                     </div>
+
                                     {mainImages.length > 0 && (
                                         <div className="html2pdf__page-break w-full mt-10 pt-8 border-t-4 border-gray-800" style={{ fontSize: 0 }}>
                                             <h3 className="text-[16px] font-black mb-6 uppercase tracking-widest text-center bg-gray-100 py-2 border border-gray-200" style={{ fontSize: '16px' }}>Photographic Evidence</h3>
@@ -1831,10 +1837,12 @@ Condition: [Detailed Condition Only]
                                                 {mainImages.map((img, idx) => (
                                                     <div key={img.id} className="break-inside-avoid inline-block align-top mb-6" style={{ width: '31%', marginRight: idx % 3 === 2 ? '0' : '3.5%', fontSize: '12px' }}>
                                                         <div className="bg-gray-100 p-1 border border-gray-300 border-b-0 rounded-t-lg">
-                                                            <p className="text-[10px] font-bold text-gray-700 uppercase tracking-wider text-center">Image {idx + 1}</p>
+                                                            <p className="text-[10px] font-bold text-gray-700 uppercase tracking-wider text-center">
+                                                                Image {idx + 1}
+                                                            </p>
                                                             {img.room && <p className="text-[10px] text-gray-500 font-bold text-center truncate px-1" title={img.room}>{img.room}</p>}
                                                         </div>
-                                                        <img src={img.data ? `data:${img.mimeType};base64,${img.data}` : img.url} className="w-full h-40 object-cover rounded-b-lg shadow-sm border border-gray-300 border-t-0" />
+                                                        <img src={img.data ? `data:${img.mimeType};base64,${img.data}` : img.url} crossOrigin={img.data ? undefined : "anonymous"} className="w-full h-40 object-cover rounded-b-lg shadow-sm border border-gray-300 border-t-0" />
                                                     </div>
                                                 ))}
                                             </div>
@@ -1843,7 +1851,6 @@ Condition: [Detailed Condition Only]
                                 </>
                             )}
 
-                            {/* Multi-Room PDF Layout */}
                             {isMultiRoom && (
                                 <>
                                     <div className="mb-8 text-center flex flex-col items-center border-b-2 border-gray-100 pb-6">
@@ -1853,31 +1860,37 @@ Condition: [Detailed Condition Only]
                                         </h2>
                                         {reportType === 'checkout' && <p className="text-gray-500 font-bold text-[11px] uppercase tracking-widest mt-1">Full Property Scope</p>}
                                     </div>
+
                                     <div className="grid grid-cols-1 gap-2 mb-10 text-[12px] bg-gray-50 p-4 rounded-lg border border-gray-200">
-                                        <div className="flex"><span className="w-48 font-bold text-gray-600 uppercase tracking-wide">Property Address:</span><span className="font-bold">{currentProperty?.address}</span></div>
+                                        <div className="flex"><span className="w-48 font-bold text-gray-600 uppercase tracking-wide">Property Address:</span> <span className="font-bold">{currentProperty?.address}</span></div>
                                         {reportType === 'checkout' && (
                                             <>
-                                                <div className="flex"><span className="w-48 font-bold text-gray-600 uppercase tracking-wide">Tenant Name:</span><span className="font-medium">{tenancyInfo.tenantName || ''}</span></div>
-                                                <div className="flex"><span className="w-48 font-bold text-gray-600 uppercase tracking-wide">Check-out Date:</span><span className="font-medium">{formatOrdinalDate(tenancyInfo.checkOutDate)}</span></div>
+                                                <div className="flex"><span className="w-48 font-bold text-gray-600 uppercase tracking-wide">Tenant Name:</span> <span className="font-medium">{tenancyInfo.tenantName || ''}</span></div>
+                                                <div className="flex"><span className="w-48 font-bold text-gray-600 uppercase tracking-wide">Check-out Date:</span> <span className="font-medium">{formatOrdinalDate(tenancyInfo.checkOutDate)}</span></div>
                                             </>
                                         )}
-                                        <div className="flex"><span className="w-48 font-bold text-gray-600 uppercase tracking-wide">Inspection Date:</span><span className="font-medium">{formatOrdinalDate(reportType === 'checkout' ? tenancyInfo.dateOfInventory : maintenanceMeta.date)}</span></div>
-                                        <div className="flex"><span className="w-48 font-bold text-gray-600 uppercase tracking-wide">Inspected By:</span><span className="font-medium">{reportType === 'checkout' ? tenancyInfo.clerkName : maintenanceMeta.clerkName || ''}</span></div>
+                                        <div className="flex"><span className="w-48 font-bold text-gray-600 uppercase tracking-wide">Inspection Date:</span> <span className="font-medium">{formatOrdinalDate(reportType === 'checkout' ? tenancyInfo.dateOfInventory : maintenanceMeta.date)}</span></div>
+                                        <div className="flex"><span className="w-48 font-bold text-gray-600 uppercase tracking-wide">Inspected By:</span> <span className="font-medium">{reportType === 'checkout' ? tenancyInfo.clerkName : maintenanceMeta.clerkName || ''}</span></div>
                                     </div>
+
                                     <div className="border-l-4 border-[#2f314b] pl-6 space-y-10">
                                         {multiRoomData.map((room) => (
                                             <div key={room.id} className="break-inside-avoid border border-gray-200 rounded-lg p-5 bg-white shadow-sm">
                                                 <h4 className="text-[16px] font-black mb-4 uppercase tracking-wide text-[#2f314b] border-b border-gray-100 pb-2">{room.name}</h4>
+                                                
                                                 {room.report && (
-                                                    <div className="mb-6 text-[12px] bg-gray-50 p-4 rounded border border-gray-100">{renderReportText(room.report)}</div>
+                                                    <div className="mb-6 text-[12px] bg-gray-50 p-4 rounded border border-gray-100">
+                                                        {renderReportText(room.report)}
+                                                    </div>
                                                 )}
+
                                                 {room.images.length > 0 && (
                                                     <div className="block w-full mt-4" style={{ fontSize: 0 }}>
                                                         <h5 className="text-[12px] font-bold uppercase tracking-wide text-gray-500 mb-3">Evidence</h5>
                                                         {room.images.map((img, iIdx) => (
                                                             <div key={img.id} className="break-inside-avoid inline-block align-top mb-4" style={{ width: '31%', marginRight: iIdx % 3 === 2 ? '0' : '3.5%', fontSize: '12px' }}>
                                                                 <p className="text-[10px] font-bold mb-1 text-gray-500 uppercase tracking-wider text-center bg-gray-100 py-1 rounded-t border border-gray-300 border-b-0">Image {iIdx + 1}</p>
-                                                                <img src={img.data ? `data:${img.mimeType};base64,${img.data}` : img.url} className="w-full h-32 object-cover rounded-b shadow-sm border border-gray-300" />
+                                                                <img src={img.data ? `data:${img.mimeType};base64,${img.data}` : img.url} crossOrigin={img.data ? undefined : "anonymous"} className="w-full h-32 object-cover rounded-b shadow-sm border border-gray-300" />
                                                             </div>
                                                         ))}
                                                     </div>
@@ -1885,6 +1898,7 @@ Condition: [Detailed Condition Only]
                                             </div>
                                         ))}
                                     </div>
+
                                     {reportType === 'checkout' && (
                                         <div className="mt-8 break-inside-avoid bg-gray-50 p-6 rounded-lg border border-gray-200">
                                             <h3 className="text-[14px] font-black mb-4 uppercase tracking-wide border-b border-gray-300 pb-2">Declaration</h3>
@@ -1898,7 +1912,6 @@ Condition: [Detailed Condition Only]
                                 </>
                             )}
 
-                            {/* Fire Safety PDF Layout */}
                             {reportType === 'fire_safety' && (
                                 <>
                                     <div className="mb-6 text-center flex flex-col items-center border-b-2 border-red-600 pb-6">
@@ -1906,6 +1919,7 @@ Condition: [Detailed Condition Only]
                                         <h2 className="text-[20px] font-black uppercase tracking-widest text-[#2f314b]">Fire Safety Inspection</h2>
                                         <p className="text-gray-500 font-bold text-[11px] uppercase tracking-widest mt-1">Official Record of Testing</p>
                                     </div>
+
                                     <div className="flex gap-4 mb-8 text-[12px]">
                                         <div className="flex-1 border border-gray-300 p-5 rounded-lg bg-gray-50 shadow-sm">
                                             <h3 className="text-[10px] text-gray-500 uppercase font-black tracking-widest mb-3 border-b border-gray-200 pb-1">Property Details</h3>
@@ -1913,10 +1927,11 @@ Condition: [Detailed Condition Only]
                                         </div>
                                         <div className="flex-1 border border-gray-300 p-5 rounded-lg bg-gray-50 shadow-sm">
                                             <h3 className="text-[10px] text-gray-500 uppercase font-black tracking-widest mb-3 border-b border-gray-200 pb-1">Inspection Details</h3>
-                                            <p className="mb-2"><strong className="text-gray-700 uppercase text-[10px]">Date of Test:</strong><span className="ml-2 font-medium">{formatOrdinalDate(tenancyInfo.dateOfInventory)}</span></p>
-                                            <p><strong className="text-gray-700 uppercase text-[10px]">Inspector:</strong><span className="ml-2 font-medium">{tenancyInfo.clerkName || 'Not specified'}</span></p>
+                                            <p className="mb-2"><strong className="text-gray-700 uppercase text-[10px]">Date of Test:</strong> <span className="ml-2 font-medium">{formatOrdinalDate(tenancyInfo.dateOfInventory)}</span></p>
+                                            <p><strong className="text-gray-700 uppercase text-[10px]">Inspector:</strong> <span className="ml-2 font-medium">{tenancyInfo.clerkName || 'Not specified'}</span></p>
                                         </div>
                                     </div>
+
                                     <h3 className="text-[13px] font-black uppercase tracking-widest border-b-2 border-black pb-1 mb-4 text-[#2f314b]">Equipment Testing Log</h3>
                                     <table className="w-full mb-10 text-[12px] text-left border-collapse border border-gray-300 shadow-sm">
                                         <thead className="bg-[#2f314b] text-white">
@@ -1935,6 +1950,7 @@ Condition: [Detailed Condition Only]
                                             <AlarmRow title="Emergency Lighting" config={fireSafetyData.emergency} />
                                         </tbody>
                                     </table>
+
                                     <h3 className="text-[13px] font-black uppercase tracking-widest border-b-2 border-black pb-1 mb-4 text-[#2f314b]">Faults & Remedial Action</h3>
                                     <div className={`p-6 mb-10 rounded-lg text-[12px] border-2 shadow-sm ${fireSafetyData.hasFaults ? 'border-red-500 bg-red-50' : 'border-green-500 bg-green-50'}`}>
                                         {fireSafetyData.hasFaults ? (
@@ -1942,6 +1958,7 @@ Condition: [Detailed Condition Only]
                                                 <div className="flex-1 border-r-2 border-red-200 pr-6">
                                                     <p className="font-black text-red-600 uppercase tracking-widest text-[11px] mb-2 border-b border-red-200 pb-1">Identified Faults</p>
                                                     <p className="mb-6 font-medium leading-relaxed">{fireSafetyData.faults}</p>
+                                                    
                                                     <p className="font-black text-red-600 uppercase tracking-widest text-[11px] mb-2 border-b border-red-200 pb-1">Action Plan</p>
                                                     <p className="font-medium leading-relaxed">{fireSafetyData.actionPlan || 'Not specified'}</p>
                                                 </div>
@@ -1950,8 +1967,8 @@ Condition: [Detailed Condition Only]
                                                     {fireSafetyData.isResolved ? (
                                                         <div className="bg-white p-4 rounded border border-green-200 shadow-sm mt-3">
                                                             <p className="font-black text-green-600 text-[14px] uppercase tracking-widest mb-3">✓ RESOLVED</p>
-                                                            <p className="text-gray-800 mb-2"><strong className="uppercase text-[10px] text-gray-500">Date:</strong><span className="font-medium ml-2">{formatOrdinalDateTime(fireSafetyData.resolvedDate)}</span></p>
-                                                            <p className="text-gray-800"><strong className="uppercase text-[10px] text-gray-500">By:</strong><span className="font-medium ml-2">{fireSafetyData.resolvedBy}</span></p>
+                                                            <p className="text-gray-800 mb-2"><strong className="uppercase text-[10px] text-gray-500">Date:</strong> <span className="font-medium ml-2">{formatOrdinalDateTime(fireSafetyData.resolvedDate)}</span></p>
+                                                            <p className="text-gray-800"><strong className="uppercase text-[10px] text-gray-500">By:</strong> <span className="font-medium ml-2">{fireSafetyData.resolvedBy}</span></p>
                                                         </div>
                                                     ) : (
                                                         <div className="bg-white p-4 rounded border border-red-200 shadow-sm mt-3">
@@ -1968,6 +1985,7 @@ Condition: [Detailed Condition Only]
                                             </div>
                                         )}
                                     </div>
+
                                     <div className="flex justify-end mt-12 break-inside-avoid">
                                         <div className="w-72 border-2 border-gray-300 rounded-lg p-5 bg-white shadow-sm">
                                             <p className="text-[10px] text-gray-500 font-black uppercase tracking-widest border-b-2 border-gray-200 pb-2 mb-4 text-center">Authorized Sign-off</p>
@@ -1983,23 +2001,26 @@ Condition: [Detailed Condition Only]
                                     </div>
                                 </>
                             )}
+
                         </div>
                     </div>
                 ) : null}
+
             </div>
 
             <footer className="max-w-4xl mx-auto mt-8 text-center print:hidden pb-8">
                 <div className="text-xs font-bold text-gray-500 mb-3 px-4 text-balance uppercase tracking-widest">
-                    &copy; {new Date().getFullYear()} Luke Martin - Arlington Park Lettings & Estate Agents<br />
-                    25a Earlham Rd, Norwich NR2 3AD{' '}
-                    <br /><a href="https://arlingtonpark.co.uk" target="_blank" rel="noopener noreferrer" className="hover:text-[#2f314b] underline transition mt-1 inline-block">arlingtonpark.co.uk</a>
+                    &copy; {new Date().getFullYear()} Luke Martin - Arlington Park Lettings & Estate Agents <br/> 25a Earlham Rd, Norwich NR2 3AD{' '}
+                    <br/><a href="https://arlingtonpark.co.uk" target="_blank" rel="noopener noreferrer" className="hover:text-[#2f314b] underline transition mt-1 inline-block">arlingtonpark.co.uk</a>
                 </div>
-                <button onClick={() => setShowApiSettings(true)} className="text-[10px] font-bold text-gray-400 hover:text-gray-600 underline transition uppercase tracking-widest">AI API Settings</button>
+                <button onClick={() => setShowApiSettings(true)} className="text-[10px] font-bold text-gray-400 hover:text-gray-600 underline transition uppercase tracking-widest">
+                    AI API Settings
+                </button>
             </footer>
 
             {showApiSettings && (
                 <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 print:hidden p-4 transition-opacity" onClick={handleModalBackdropClick}>
-                    <div className="bg-white p-8 rounded-2xl shadow-2xl max-w-md w-full border border-gray-200">
+                    <div className="bg-white p-8 rounded-2xl shadow-2xl max-w-md w-full border border-gray-200 animate-in zoom-in-95">
                         <h3 className="text-xl font-black text-gray-900 mb-6 border-b-2 border-gray-100 pb-2">API Configuration</h3>
                         <input
                             type="password"
@@ -2009,18 +2030,14 @@ Condition: [Detailed Condition Only]
                             autoComplete="off"
                             className="w-full p-3 text-sm border-2 border-gray-200 rounded-xl focus:ring-[#2f314b] focus:border-[#2f314b] mb-4 font-medium transition"
                         />
-                        {/* FIX #6: Show localStorage warning inside settings modal */}
-                        {localStorageUnavailable && (
-                            <div className="bg-amber-50 p-3 rounded-xl border border-amber-200 mb-4">
-                                <p className="text-[11px] font-bold text-amber-800">⚠ Local storage is blocked in your browser. Your API key cannot be saved between sessions.</p>
-                            </div>
-                        )}
                         <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 mb-6">
                             <p className="text-[11px] font-bold text-blue-800 uppercase tracking-wide mb-1">Cloud Storage Active</p>
                             <p className="text-[11px] font-medium text-blue-600 leading-relaxed">Your API key is saved to your browser's local storage. Property reports and data are saved securely to your Firebase Firestore database.</p>
                         </div>
                         <div className="flex justify-end">
-                            <button onClick={() => setShowApiSettings(false)} className="bg-[#2f314b] text-white px-8 py-3 rounded-xl font-bold hover:bg-[#2f314b]/90 transition shadow-md">Done</button>
+                            <button onClick={() => setShowApiSettings(false)} className="bg-[#2f314b] text-white px-8 py-3 rounded-xl font-bold hover:bg-[#2f314b]/90 transition shadow-md">
+                                Done
+                            </button>
                         </div>
                     </div>
                 </div>
