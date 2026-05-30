@@ -51,10 +51,12 @@ const getEnvKey = () => {
 
 const callGeminiWithFallback = async (payload, activeApiKey) => {
     let lastError = null;
+    
+    // Updated to use the most stable, current production models
     const defaultModels = [
-        'gemini-2.5-flash-preview-05-20',
-        'gemini-2.5-flash',
-        'gemini-2.0-flash-exp',
+        'gemini-2.0-flash',
+        'gemini-1.5-flash',
+        'gemini-1.5-pro'
     ];
 
     for (const model of defaultModels) {
