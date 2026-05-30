@@ -838,6 +838,7 @@ export default function App() {
         });
     };
 
+    // --- FIX: Safely positioned sandbox to avoid blank transparency bug ---
     const handleDownloadPDFWrapper = () => {
         const sourceElement = document.getElementById('printable-report');
         if (!sourceElement || isProcessing) return;
@@ -870,13 +871,12 @@ export default function App() {
                 }
 
                 sandboxRef = document.createElement('div');
+                // Pushed extremely far off screen rather than using opacity: 0 to ensure html2canvas paints it fully
                 sandboxRef.style.position = 'absolute';
-                sandboxRef.style.left = '0';
+                sandboxRef.style.left = '-9999px'; 
                 sandboxRef.style.top = '0';
                 sandboxRef.style.width = '210mm'; 
-                sandboxRef.style.zIndex = '-9999';
-                sandboxRef.style.opacity = '0';
-                sandboxRef.style.pointerEvents = 'none';
+                sandboxRef.style.backgroundColor = '#ffffff';
 
                 const clone = sourceElement.cloneNode(true);
                 clone.style.setProperty('--color-gray-900', '#111827');
@@ -911,7 +911,7 @@ export default function App() {
                     margin: 10,
                     filename: safeFilename,
                     image: { type: 'jpeg', quality: 0.98 },
-                    html2canvas: { scale: 2, useCORS: true, letterRendering: true, logging: false, imageTimeout: 8000 },
+                    html2canvas: { scale: 2, useCORS: true, letterRendering: true, logging: false },
                     jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
                 };
 
@@ -1499,11 +1499,20 @@ Condition: [Detailed Condition Only]
                                     {isMultiRoom && (
                                         <div className="bg-white border-2 border-gray-200 rounded-xl p-6 sm:p-8 mt-6">
                                             <h3 className="text-lg font-bold text-gray-800 mb-4 border-b-2 border-gray-100 pb-2 uppercase tracking-wide">Rooms to Inspect</h3>
+                                            <p className="text-sm text-gray-500 mb-4 font-medium">Type a room name and press <kbd className="bg-gray-200 px-2 py-1 rounded text-xs font-bold text-gray-700 border border-gray-300 shadow-sm mx-1">Enter</kbd> to quickly add the next room.</p>
                                             <div className="space-y-4">
                                                 {multiRoomData.map((room, idx) => (
                                                     <div key={room.id} className="flex items-center gap-3 bg-gray-50 p-3 rounded-lg border border-gray-200">
                                                         <span className="font-bold text-gray-400 w-6 text-center">{idx + 1}.</span>
-                                                        <input type="text" value={room.name} onChange={(e) => updateMultiRoomName(room.id, e.target.value)} onKeyDown={handleRoomInputKeyDown} placeholder="e.g. Kitchen, Bedroom 1, En-suite Bathroom" className="flex-1 p-3 border border-gray-300 rounded-lg focus:ring-[#2f314b] font-medium bg-white" ref={el => roomInputRefs.current[room.id] = el} />
+                                                        <input 
+                                                            type="text" 
+                                                            value={room.name} 
+                                                            onChange={(e) => updateMultiRoomName(room.id, e.target.value)} 
+                                                            onKeyDown={handleRoomInputKeyDown}
+                                                            placeholder="e.g. Kitchen, Bedroom 1, En-suite Bathroom" 
+                                                            className="flex-1 p-3 border border-gray-300 rounded-lg focus:ring-[#2f314b] font-medium bg-white"
+                                                            ref={el => roomInputRefs.current[room.id] = el}
+                                                        />
                                                         <button onClick={() => removeMultiRoom(room.id)} className="text-red-500 hover:bg-red-100 hover:text-red-700 px-4 py-3 rounded-lg text-sm font-bold transition">Delete</button>
                                                     </div>
                                                 ))}
