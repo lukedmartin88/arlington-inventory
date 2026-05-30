@@ -295,6 +295,12 @@ export default function App() {
     const [showAddProperty, setShowAddProperty] = useState(false);
     const [newPropertyAddress, setNewPropertyAddress] = useState('');
     const [showApiSettings, setShowApiSettings] = useState(false);
+    
+    // Legacy PDF Upload States
+    const [showPdfUpload, setShowPdfUpload] = useState(false);
+    const [pdfFile, setPdfFile] = useState(null);
+    const [pdfMeta, setPdfMeta] = useState({ type: 'inventory', date: '', inspector: '', label: '' });
+
     const [activeApiKey, setActiveApiKey] = useState(getEnvKey());
     const [step, setStep] = useState(0);
     const [reportType, setReportType] = useState(null); 
@@ -400,20 +406,24 @@ export default function App() {
     }, [currentView, step, selectedPropertyId]);
   
     const handleModalBackdropClick = (e) => {
-        if (e.target === e.currentTarget) setShowApiSettings(false);
+        if (e.target === e.currentTarget) {
+            setShowApiSettings(false);
+            setShowPdfUpload(false);
+        }
     };
 
     useEffect(() => {
-        if (!showApiSettings && !lightboxImage) return;
+        if (!showApiSettings && !lightboxImage && !showPdfUpload) return;
         const handleKey = (e) => { 
             if (e.key === 'Escape') {
                 setShowApiSettings(false);
+                setShowPdfUpload(false);
                 setLightboxImage(null);
             }
         };
         window.addEventListener('keydown', handleKey);
         return () => window.removeEventListener('keydown', handleKey);
-    }, [showApiSettings, lightboxImage]);
+    }, [showApiSettings, lightboxImage, showPdfUpload]);
 
     const handleSelectProperty = async (id) => {
         setSelectedPropertyId(id);
@@ -486,10 +496,7 @@ export default function App() {
         const report = await dbGetReport(id);
         setReportType(report.reportType);
         
-        // Deep copy data so we do not mutate the original
         const data = JSON.parse(JSON.stringify(report.data));
-        
-        // Wipe dates and signatures to ensure a fresh report structure
         if (data.tenancyInfo) {
             data.tenancyInfo.dateOfInventory = '';
             data.tenancyInfo.checkOutDate = '';
@@ -509,10 +516,79 @@ export default function App() {
         setUncategorisedImages([]);
         setFireSafetyData(data.fireSafetyData || {});
         
-        // Clear the selected ID so this saves as a brand new document
         setSelectedReportId(null);
         setStep(1);
         setCurrentView('wizard');
+    };
+
+    // --- Legacy PDF Upload Handler ---
+    const handlePdfUploadSubmit = async () => {
+        if (!pdfFile) return setErrorMsg("Please select a PDF file.");
+        setIsProcessing(true);
+        setErrorMsg('');
+        const reportId = newId();
+
+        try {
+            setLoadingState({ active: true, progress: 20, text: 'Reading PDF file...' });
+            await new Promise(resolve => setTimeout(resolve, 50));
+
+            const reader = new FileReader();
+            const dataUrl = await new Promise((resolve, reject) => {
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = reject;
+                reader.readAsDataURL(pdfFile);
+            });
+
+            setLoadingState({ active: true, progress: 50, text: 'Uploading to cloud storage...' });
+            
+            // Clean filename to avoid storage path issues
+            const cleanFilename = pdfFile.name.replace(/[^a-zA-Z0-9.-]/g, '_');
+            const pdfRef = ref(storage, `reports/${reportId}/${cleanFilename}`);
+            
+            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Upload timeout: The file took too long to upload.")), 25000));
+            await Promise.race([
+                uploadString(pdfRef, dataUrl, 'data_url'),
+                timeoutPromise
+            ]);
+
+            const url = await getDownloadURL(pdfRef);
+
+            setLoadingState({ active: true, progress: 85, text: 'Saving to database...' });
+
+            const reportData = {
+                id: reportId,
+                propertyId: selectedPropertyId,
+                reportType: pdfMeta.type,
+                reportDate: pdfMeta.date || new Date().toISOString(),
+                inspectorName: pdfMeta.inspector,
+                createdAt: new Date().toISOString(),
+                isExternalPdf: true,
+                data: {
+                    pdfUrl: url,
+                    label: pdfMeta.label
+                }
+            };
+
+            await dbPut(STORE_REPORTS, reportData);
+            
+            setLoadingState({ active: true, progress: 100, text: 'Uploaded successfully!' });
+            await new Promise(resolve => setTimeout(resolve, 800));
+            
+            setShowPdfUpload(false);
+            setPdfFile(null);
+            setPdfMeta({ type: 'inventory', date: '', inspector: '', label: '' });
+            setLoadingState({ active: false, progress: 0, text: '' });
+            
+            const reports = await dbGetReportsByProperty(selectedPropertyId);
+            setPropertyReports(reports.sort((a,b) => new Date(b.reportDate) - new Date(a.reportDate)));
+
+        } catch (err) {
+            console.error(err);
+            setErrorMsg(`Upload failed: ${err.message}`);
+            setLoadingState({ active: false, progress: 0, text: '' });
+        } finally {
+            setIsProcessing(false);
+        }
     };
 
     const handleSaveReportToPortfolio = async () => {
@@ -529,12 +605,10 @@ export default function App() {
             inspectorName = maintenanceMeta.clerkName;
         }
 
-        // If editing an existing report, overwrite it. Otherwise generate a new ID.
         const reportId = selectedReportId || newId();
 
         try {
             setLoadingState({ active: true, progress: 5, text: 'Preparing to save...' });
-            
             await new Promise(resolve => setTimeout(resolve, 50));
 
             const unuploadedMain = mainImages.filter(img => img.data).map(img => ({ target: 'main', img }));
@@ -796,7 +870,6 @@ export default function App() {
                 }
 
                 sandboxRef = document.createElement('div');
-                // Use a safer hidden layout approach to avoid crashing html2canvas rendering
                 sandboxRef.style.position = 'absolute';
                 sandboxRef.style.left = '0';
                 sandboxRef.style.top = '0';
@@ -846,7 +919,7 @@ export default function App() {
 
             } catch (err) {
                 console.error("PDF generation failed:", err); 
-                setErrorMsg("PDF generation failed. Falling back to native print.");
+                setErrorMsg("PDF generation failed. Check storage permissions and CORS settings. Falling back to print.");
                 window.print();
             } finally {
                 if (!isCompleted) {
@@ -1202,9 +1275,14 @@ Condition: [Detailed Condition Only]
                         
                         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mt-8 mb-4 gap-4">
                             <h3 className="text-xl font-bold text-gray-800 border-b-2 border-[#2f314b] pb-1">Saved Reports</h3>
-                            <button onClick={handleStartNewReport} className="bg-[#2f314b] text-white px-6 py-3 rounded-lg font-bold shadow hover:bg-[#2f314b]/90 transition w-full sm:w-auto text-center">
-                                + Create New Report
-                            </button>
+                            <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
+                                <button onClick={() => setShowPdfUpload(true)} className="bg-white border-2 border-[#2f314b] text-[#2f314b] px-6 py-3 rounded-lg font-bold shadow-sm hover:bg-gray-50 transition text-center">
+                                    Upload Past PDF
+                                </button>
+                                <button onClick={handleStartNewReport} className="bg-[#2f314b] text-white px-6 py-3 rounded-lg font-bold shadow hover:bg-[#2f314b]/90 transition text-center">
+                                    + Create New Report
+                                </button>
+                            </div>
                         </div>
 
                         <div className="space-y-4">
@@ -1217,12 +1295,15 @@ Condition: [Detailed Condition Only]
                                     <div key={report.id} className="bg-white border border-gray-200 p-5 rounded-xl shadow-sm flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 hover:border-[#2f314b] transition">
                                         <div>
                                             <p className="font-bold text-gray-900 text-lg uppercase tracking-wide">
-                                                {formatType(report.reportType)}
+                                                {formatType(report.reportType)} 
+                                                {report.isExternalPdf && <span className="ml-3 text-[10px] bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full align-middle font-bold">Legacy PDF</span>}
                                             </p>
                                             <p className="text-sm font-bold text-[#2f314b] mt-1 mb-1">
-                                                {report.reportType === 'inventory' || (report.reportType === 'checkout' && report.data.tenancyInfo?.checkoutScope === 'room') 
-                                                    ? `Room Let: ${report.data.tenancyInfo?.roomIdentifier || 'N/A'} (${report.data.tenancyInfo?.tenantName || 'N/A'})` 
-                                                    : 'Entire Property Scope'}
+                                                {report.isExternalPdf 
+                                                    ? (report.data.label || 'Legacy Upload')
+                                                    : (report.reportType === 'inventory' || (report.reportType === 'checkout' && report.data.tenancyInfo?.checkoutScope === 'room') 
+                                                        ? `Room Let: ${report.data.tenancyInfo?.roomIdentifier || 'N/A'} (${report.data.tenancyInfo?.tenantName || 'N/A'})` 
+                                                        : 'Entire Property Scope')}
                                             </p>
                                             <p className="text-sm text-gray-600 mt-1">
                                                 <span className="font-semibold text-gray-500">{formatOrdinalDate(report.reportDate)}</span> 
@@ -1231,12 +1312,20 @@ Condition: [Detailed Condition Only]
                                             </p>
                                         </div>
                                         <div className="flex flex-wrap gap-2 w-full sm:w-auto border-t sm:border-0 pt-3 sm:pt-0">
-                                            <button onClick={() => handleViewSavedReport(report.id)} className="flex-1 sm:flex-none text-[#2f314b] bg-[#2f314b]/10 px-4 py-2 rounded font-bold hover:bg-[#2f314b]/20 transition text-center">
-                                                View
-                                            </button>
-                                            <button onClick={() => handleUseAsTemplate(report.id)} className="flex-1 sm:flex-none text-blue-600 bg-blue-50 px-4 py-2 rounded font-bold hover:bg-blue-100 transition text-center">
-                                                Use as Template
-                                            </button>
+                                            {report.isExternalPdf ? (
+                                                <a href={report.data.pdfUrl} target="_blank" rel="noopener noreferrer" className="flex-1 sm:flex-none text-[#2f314b] bg-[#2f314b]/10 px-4 py-2 rounded font-bold hover:bg-[#2f314b]/20 transition text-center flex items-center justify-center">
+                                                    View PDF
+                                                </a>
+                                            ) : (
+                                                <>
+                                                    <button onClick={() => handleViewSavedReport(report.id)} className="flex-1 sm:flex-none text-[#2f314b] bg-[#2f314b]/10 px-4 py-2 rounded font-bold hover:bg-[#2f314b]/20 transition text-center">
+                                                        View
+                                                    </button>
+                                                    <button onClick={() => handleUseAsTemplate(report.id)} className="flex-1 sm:flex-none text-blue-600 bg-blue-50 px-4 py-2 rounded font-bold hover:bg-blue-100 transition text-center">
+                                                        Use as Template
+                                                    </button>
+                                                </>
+                                            )}
                                             <button onClick={() => handleDeleteReport(report.id)} className="flex-1 sm:flex-none text-red-600 bg-red-50 px-4 py-2 rounded font-bold hover:bg-red-100 transition text-center">
                                                 Delete
                                             </button>
@@ -1410,20 +1499,11 @@ Condition: [Detailed Condition Only]
                                     {isMultiRoom && (
                                         <div className="bg-white border-2 border-gray-200 rounded-xl p-6 sm:p-8 mt-6">
                                             <h3 className="text-lg font-bold text-gray-800 mb-4 border-b-2 border-gray-100 pb-2 uppercase tracking-wide">Rooms to Inspect</h3>
-                                            <p className="text-sm text-gray-500 mb-4 font-medium">Type a room name and press <kbd className="bg-gray-200 px-2 py-1 rounded text-xs font-bold text-gray-700 border border-gray-300 shadow-sm mx-1">Enter</kbd> to quickly add the next room.</p>
                                             <div className="space-y-4">
                                                 {multiRoomData.map((room, idx) => (
                                                     <div key={room.id} className="flex items-center gap-3 bg-gray-50 p-3 rounded-lg border border-gray-200">
                                                         <span className="font-bold text-gray-400 w-6 text-center">{idx + 1}.</span>
-                                                        <input 
-                                                            type="text" 
-                                                            value={room.name} 
-                                                            onChange={(e) => updateMultiRoomName(room.id, e.target.value)} 
-                                                            onKeyDown={handleRoomInputKeyDown}
-                                                            placeholder="e.g. Kitchen, Bedroom 1, En-suite Bathroom" 
-                                                            className="flex-1 p-3 border border-gray-300 rounded-lg focus:ring-[#2f314b] font-medium bg-white"
-                                                            ref={el => roomInputRefs.current[room.id] = el}
-                                                        />
+                                                        <input type="text" value={room.name} onChange={(e) => updateMultiRoomName(room.id, e.target.value)} onKeyDown={handleRoomInputKeyDown} placeholder="e.g. Kitchen, Bedroom 1, En-suite Bathroom" className="flex-1 p-3 border border-gray-300 rounded-lg focus:ring-[#2f314b] font-medium bg-white" ref={el => roomInputRefs.current[room.id] = el} />
                                                         <button onClick={() => removeMultiRoom(room.id)} className="text-red-500 hover:bg-red-100 hover:text-red-700 px-4 py-3 rounded-lg text-sm font-bold transition">Delete</button>
                                                     </div>
                                                 ))}
@@ -2007,6 +2087,68 @@ Condition: [Detailed Condition Only]
                 ) : null}
 
             </div>
+
+            {/* --- LEGACY PDF UPLOAD MODAL --- */}
+            {showPdfUpload && (
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 print:hidden p-4 transition-opacity" onClick={handleModalBackdropClick}>
+                    <div className="bg-white p-8 rounded-2xl shadow-2xl max-w-md w-full border border-gray-200 animate-in zoom-in-95">
+                        <h3 className="text-xl font-black text-gray-900 mb-6 border-b-2 border-gray-100 pb-2">Upload Past PDF Report</h3>
+                        
+                        <div className="space-y-4 mb-8">
+                            <div>
+                                <label className="block text-sm font-bold text-gray-700 mb-1">Select PDF File <span className="text-red-500">*</span></label>
+                                <input type="file" accept="application/pdf" onChange={(e) => setPdfFile(e.target.files[0])} className="w-full text-sm font-medium border border-gray-300 rounded-lg p-2 focus:ring-[#2f314b] file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-xs file:font-bold file:bg-[#2f314b] file:text-white" />
+                            </div>
+                            
+                            <div>
+                                <label className="block text-sm font-bold text-gray-700 mb-1">Report Type <span className="text-red-500">*</span></label>
+                                <select value={pdfMeta.type} onChange={(e) => setPdfMeta({...pdfMeta, type: e.target.value})} className="w-full p-3 border border-gray-300 rounded-lg font-medium text-sm focus:ring-[#2f314b]">
+                                    <option value="inventory">Initial Condition / Inventory</option>
+                                    <option value="checkout">Check-Out Report</option>
+                                    <option value="maintenance">Maintenance Schedule</option>
+                                    <option value="fire_safety">Fire Safety Check</option>
+                                </select>
+                            </div>
+
+                            <div>
+                                <label className="block text-sm font-bold text-gray-700 mb-1">Report Description/Label</label>
+                                <input type="text" placeholder="e.g. Room 1 (John Doe) or Full Property" value={pdfMeta.label} onChange={(e) => setPdfMeta({...pdfMeta, label: e.target.value})} className="w-full p-3 border border-gray-300 rounded-lg font-medium text-sm focus:ring-[#2f314b]" />
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-sm font-bold text-gray-700 mb-1">Report Date</label>
+                                    <input type="date" value={pdfMeta.date} onChange={(e) => setPdfMeta({...pdfMeta, date: e.target.value})} className="w-full p-3 border border-gray-300 rounded-lg font-medium text-sm focus:ring-[#2f314b]" />
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-bold text-gray-700 mb-1">Inspector</label>
+                                    <input type="text" value={pdfMeta.inspector} onChange={(e) => setPdfMeta({...pdfMeta, inspector: e.target.value})} className="w-full p-3 border border-gray-300 rounded-lg font-medium text-sm focus:ring-[#2f314b]" />
+                                </div>
+                            </div>
+                        </div>
+
+                        {loadingState.active ? (
+                             <div className="mb-6 animate-in fade-in">
+                                 <div className="flex justify-between text-sm text-[#2f314b] font-bold mb-3 uppercase tracking-wider">
+                                     <span>{loadingState.text}</span><span>{Math.round(loadingState.progress)}%</span>
+                                 </div>
+                                 <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
+                                     <div className="bg-[#2f314b] h-3 rounded-full transition-all duration-300" style={{ width: `${loadingState.progress}%` }}></div>
+                                 </div>
+                             </div>
+                        ) : null}
+
+                        {errorMsg && (
+                            <div className="p-4 bg-red-50 text-red-700 rounded-xl text-sm border-2 border-red-200 mb-6 font-bold">{errorMsg}</div>
+                        )}
+
+                        <div className="flex justify-end gap-3 pt-4 border-t border-gray-100">
+                            <button onClick={() => setShowPdfUpload(false)} disabled={isProcessing} className="px-6 py-3 font-bold text-gray-600 hover:bg-gray-100 rounded-xl transition disabled:opacity-50">Cancel</button>
+                            <button onClick={handlePdfUploadSubmit} disabled={isProcessing} className="px-6 py-3 font-bold bg-[#2f314b] text-white rounded-xl hover:bg-[#2f314b]/90 transition shadow-md disabled:opacity-50">Upload & Save</button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             <footer className="max-w-4xl mx-auto mt-8 text-center print:hidden pb-8">
                 <div className="text-xs font-bold text-gray-500 mb-3 px-4 text-balance uppercase tracking-widest">
