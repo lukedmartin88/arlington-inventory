@@ -52,11 +52,11 @@ const getEnvKey = () => {
 const callGeminiWithFallback = async (payload, activeApiKey) => {
     let lastError = null;
     
-    // Updated to use the most stable, current production models
+    // Updated to use the active production models
     const defaultModels = [
-        'gemini-2.0-flash',
-        'gemini-1.5-flash',
-        'gemini-1.5-pro'
+        'gemini-3.5-flash',
+        'gemini-3.0-flash',
+        'gemini-2.5-flash'
     ];
 
     for (const model of defaultModels) {
@@ -523,7 +523,6 @@ export default function App() {
         setCurrentView('wizard');
     };
 
-    // --- Legacy PDF Upload Handler ---
     const handlePdfUploadSubmit = async () => {
         if (!pdfFile) return setErrorMsg("Please select a PDF file.");
         setIsProcessing(true);
@@ -543,7 +542,6 @@ export default function App() {
 
             setLoadingState({ active: true, progress: 50, text: 'Uploading to cloud storage...' });
             
-            // Clean filename to avoid storage path issues
             const cleanFilename = pdfFile.name.replace(/[^a-zA-Z0-9.-]/g, '_');
             const pdfRef = ref(storage, `reports/${reportId}/${cleanFilename}`);
             
@@ -840,7 +838,6 @@ export default function App() {
         });
     };
 
-    // --- FIX: Safely positioned sandbox to avoid blank transparency bug ---
     const handleDownloadPDFWrapper = () => {
         const sourceElement = document.getElementById('printable-report');
         if (!sourceElement || isProcessing) return;
@@ -850,16 +847,12 @@ export default function App() {
         setPdfFallbackMsg('');
 
         let isCompleted = false;
-        let sandboxRef = null;
 
         const safetyUnlock = setTimeout(() => {
             if (!isCompleted) {
                 isCompleted = true;
                 setIsProcessing(false);
-                setErrorMsg("PDF generation stalled. Falling back to native print.");
-                if (sandboxRef && document.body.contains(sandboxRef)) {
-                    document.body.removeChild(sandboxRef);
-                }
+                setErrorMsg("PDF generation stalled. Check storage permissions and CORS settings. Falling back to native print.");
                 window.print();
             }
         }, 15000);
@@ -871,26 +864,6 @@ export default function App() {
                     isCompleted = true; clearTimeout(safetyUnlock);
                     setPdfFallbackMsg("PDF library not loaded, using native print instead."); window.print(); return;
                 }
-
-                sandboxRef = document.createElement('div');
-                // Pushed extremely far off screen rather than using opacity: 0 to ensure html2canvas paints it fully
-                sandboxRef.style.position = 'absolute';
-                sandboxRef.style.left = '-9999px'; 
-                sandboxRef.style.top = '0';
-                sandboxRef.style.width = '210mm'; 
-                sandboxRef.style.backgroundColor = '#ffffff';
-
-                const clone = sourceElement.cloneNode(true);
-                clone.style.setProperty('--color-gray-900', '#111827');
-                clone.style.setProperty('--color-gray-800', '#1f2937');
-                clone.style.setProperty('--color-gray-700', '#374151');
-                clone.style.setProperty('--color-gray-500', '#6b7280');
-                clone.style.setProperty('--color-gray-200', '#e5e7eb');
-                clone.style.setProperty('--color-white', '#ffffff');
-                clone.style.color = '#111827';
-
-                sandboxRef.appendChild(clone);
-                document.body.appendChild(sandboxRef);
 
                 let safeFilename = 'Report.pdf';
                 const propStr = currentProperty?.address ? currentProperty.address.slice(0, 20).replace(/[/\\?%*:|"<>]/g, '_') : 'Property';
@@ -913,11 +886,18 @@ export default function App() {
                     margin: 10,
                     filename: safeFilename,
                     image: { type: 'jpeg', quality: 0.98 },
-                    html2canvas: { scale: 2, useCORS: true, letterRendering: true, logging: false },
+                    html2canvas: { 
+                        scale: 2, 
+                        useCORS: true, 
+                        letterRendering: true, 
+                        logging: false,
+                        windowWidth: sourceElement.scrollWidth,
+                        windowHeight: sourceElement.scrollHeight 
+                    },
                     jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
                 };
 
-                await window.html2pdf().set(opt).from(sandboxRef).save();
+                await window.html2pdf().set(opt).from(sourceElement).save();
 
             } catch (err) {
                 console.error("PDF generation failed:", err); 
@@ -928,9 +908,6 @@ export default function App() {
                     isCompleted = true; 
                     clearTimeout(safetyUnlock); 
                     setIsProcessing(false);
-                }
-                if (sandboxRef && document.body.contains(sandboxRef)) {
-                    document.body.removeChild(sandboxRef);
                 }
             }
         };
@@ -1187,10 +1164,6 @@ Condition: [Detailed Condition Only]
                     .html2pdf__page-break { page-break-before: always; }
                     .break-inside-avoid-page { page-break-inside: avoid; break-inside: avoid; }
                 }
-                #printable-report {
-                    --color-gray-900: #111827 !important; --color-gray-800: #1f2937 !important; --color-gray-700: #374151 !important;
-                    --color-gray-500: #6b7280 !important; --color-gray-200: #e5e7eb !important; --color-white: #ffffff !important;
-                }
                 `}
             </style>
 
@@ -1204,7 +1177,7 @@ Condition: [Detailed Condition Only]
                 </div>
             )}
 
-            <div className="max-w-4xl mx-auto bg-white rounded-xl shadow-lg overflow-hidden print:shadow-none">
+            <div className="max-w-4xl mx-auto bg-white rounded-xl shadow-lg overflow-hidden print:shadow-none print:w-full print:max-w-full">
 
 <div className="bg-[#2f314b] text-white p-4 sm:p-6 print:hidden flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-4">
   <div className="flex items-center gap-4 cursor-pointer" onClick={goHome}>
