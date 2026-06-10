@@ -345,6 +345,7 @@ export default function App() {
     const progressIntervalRef = useRef(null);
     const currentProperty = properties.find(p => p.id === selectedPropertyId);
     const isMultiRoom = reportType === 'maintenance' || (reportType === 'checkout' && tenancyInfo.checkoutScope === 'property');
+    const selectedReportComments = (propertyReports.find(r => r.id === selectedReportId) || {data:{}}).data.tenantComments || [];
 
     useEffect(() => {
         if (multiRoomData.length === 0) setMultiRoomData([{ id: newId(), name: '', images: [], report: '' }]);
@@ -1884,14 +1885,14 @@ Condition: [Detailed Condition Only]
                                     </div>
 
                                     {/* --- TENANT COMMENTS SECTION (rendered in view/print) --- */}
-                                    {(propertyReports.find(r => r.id === selectedReportId)?.data?.tenantComments || []).length > 0 && (
+                                    {selectedReportComments.length > 0 && (
                                         <div className="mt-10 border-t-4 border-amber-300 pt-8 break-inside-avoid">
                                             <h3 className="text-lg font-black text-amber-800 uppercase tracking-widest mb-6 flex items-center gap-2">
                                                 <span className="inline-block w-3 h-3 rounded-full bg-amber-400"></span>
                                                 Tenant Responses
                                             </h3>
                                             <div className="space-y-6">
-                                                {(propertyReports.find(r => r.id === selectedReportId)?.data?.tenantComments || []).map((comment) => (
+                                                {selectedReportComments.map((comment) => (
                                                     <div key={comment.id} className="bg-amber-50 border border-amber-200 rounded-xl p-5 shadow-sm">
                                                         <div className="flex justify-between items-start mb-3">
                                                             <span className="font-bold text-amber-900 text-sm uppercase tracking-wide">{comment.tenantName}</span>
