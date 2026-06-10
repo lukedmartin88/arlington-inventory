@@ -1884,43 +1884,38 @@ Condition: [Detailed Condition Only]
                                     </div>
 
                                     {/* --- TENANT COMMENTS SECTION (rendered in view/print) --- */}
-                                    {(() => {
-                                        const activeReport = propertyReports.find(r => r.id === selectedReportId);
-                                        const comments = activeReport?.data?.tenantComments || [];
-                                        if (comments.length === 0) return null;
-                                        return (
-                                            <div className="mt-10 border-t-4 border-amber-300 pt-8 break-inside-avoid">
-                                                <h3 className="text-lg font-black text-amber-800 uppercase tracking-widest mb-6 flex items-center gap-2">
-                                                    <span className="inline-block w-3 h-3 rounded-full bg-amber-400"></span>
-                                                    Tenant Responses
-                                                </h3>
-                                                <div className="space-y-6">
-                                                    {comments.map((comment) => (
-                                                        <div key={comment.id} className="bg-amber-50 border border-amber-200 rounded-xl p-5 shadow-sm">
-                                                            <div className="flex justify-between items-start mb-3">
-                                                                <span className="font-bold text-amber-900 text-sm uppercase tracking-wide">{comment.tenantName}</span>
-                                                                <span className="text-[11px] text-amber-700 font-medium">{formatOrdinalDateTime(comment.submittedAt)}</span>
-                                                            </div>
-                                                            {comment.text && <p className="text-sm text-gray-800 leading-relaxed whitespace-pre-line mb-4">{comment.text}</p>}
-                                                            {comment.images?.length > 0 && (
-                                                                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 mt-3">
-                                                                    {comment.images.map((img) => (
-                                                                        <img
-                                                                            key={img.id}
-                                                                            src={img.url}
-                                                                            alt="Tenant photo"
-                                                                            className="w-full h-28 object-cover rounded-lg border border-amber-200 cursor-zoom-in"
-                                                                            onClick={() => setLightboxImage(img)}
-                                                                        />
-                                                                    ))}
-                                                                </div>
-                                                            )}
+                                    {(propertyReports.find(r => r.id === selectedReportId)?.data?.tenantComments || []).length > 0 && (
+                                        <div className="mt-10 border-t-4 border-amber-300 pt-8 break-inside-avoid">
+                                            <h3 className="text-lg font-black text-amber-800 uppercase tracking-widest mb-6 flex items-center gap-2">
+                                                <span className="inline-block w-3 h-3 rounded-full bg-amber-400"></span>
+                                                Tenant Responses
+                                            </h3>
+                                            <div className="space-y-6">
+                                                {(propertyReports.find(r => r.id === selectedReportId)?.data?.tenantComments || []).map((comment) => (
+                                                    <div key={comment.id} className="bg-amber-50 border border-amber-200 rounded-xl p-5 shadow-sm">
+                                                        <div className="flex justify-between items-start mb-3">
+                                                            <span className="font-bold text-amber-900 text-sm uppercase tracking-wide">{comment.tenantName}</span>
+                                                            <span className="text-[11px] text-amber-700 font-medium">{formatOrdinalDateTime(comment.submittedAt)}</span>
                                                         </div>
-                                                    ))}
-                                                </div>
+                                                        {comment.text && <p className="text-sm text-gray-800 leading-relaxed whitespace-pre-line mb-4">{comment.text}</p>}
+                                                        {comment.images && comment.images.length > 0 && (
+                                                            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 mt-3">
+                                                                {comment.images.map((img) => (
+                                                                    <img
+                                                                        key={img.id}
+                                                                        src={img.url}
+                                                                        alt="Tenant photo"
+                                                                        className="w-full h-28 object-cover rounded-lg border border-amber-200 cursor-zoom-in"
+                                                                        onClick={() => setLightboxImage(img)}
+                                                                    />
+                                                                ))}
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                ))}
                                             </div>
-                                        );
-                                    })()}
+                                        </div>
+                                    )}
                                 </div>
                                 </>
                             )}
