@@ -934,7 +934,7 @@ export default function App() {
                 }
 
                 let safeFilename = 'Report.pdf';
-                const propStr = currentProperty?.address ? currentProperty.address.slice(0, 20).replace(/[/\\?%*:|"<>]/g, '_') : 'Property';
+                const propStr = currentProperty?.address ? currentProperty.address.slice(0, 20).replace(/[\/\\?%*:|"<>]/g, '_') : 'Property';
 
                 if (reportType === 'maintenance') {
                     const mDate = maintenanceMeta.date || 'NoDate';
@@ -947,7 +947,7 @@ export default function App() {
                     const rNum = (reportType === 'checkout' && tenancyInfo.checkoutScope === 'property') ? 'Full_Property' : (tenancyInfo.roomIdentifier?.trim() || 'Room');
                     const mDate = reportType === 'checkout' ? (tenancyInfo.checkOutDate || 'NoDate') : (tenancyInfo.moveInDate || 'NoDate');
                     const filePrefix = reportType === 'checkout' ? 'Checkout' : 'Inventory';
-                    safeFilename = `${filePrefix}_${tName}_${rNum}_${mDate}`.replace(/[/\\?%*:|"<>]/g, '_').trim() + '.pdf';
+                    safeFilename = `${filePrefix}_${tName}_${rNum}_${mDate}`.replace(/[\/\\?%*:|"<>]/g, '_').trim() + '.pdf';
                 }
 
                 const opt = {
