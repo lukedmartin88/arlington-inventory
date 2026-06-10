@@ -157,7 +157,6 @@ const dbGetReport = async (id) => {
     throw new Error("Report not found in database.");
 };
 
-// FIX: Re-added explicitly defining the MIME type in the upload string
 const uploadImageToStorage = async (reportId, imageId, mimeType, base64Data) => {
     const path = `reports/${reportId}/${imageId}`;
     const imageRef = ref(storage, path);
@@ -934,7 +933,7 @@ export default function App() {
                 }
 
                 let safeFilename = 'Report.pdf';
-                // FIX: Escaped forward slashes inside the path exclusion regex arrays
+                // FIX: Escaped forward slashes inside path regex arrays
                 const propStr = currentProperty?.address ? currentProperty.address.slice(0, 20).replace(/[\/\\?%*:|"<>]/g, '_') : 'Property';
 
                 if (reportType === 'maintenance') {
@@ -948,7 +947,7 @@ export default function App() {
                     const rNum = (reportType === 'checkout' && tenancyInfo.checkoutScope === 'property') ? 'Full_Property' : (tenancyInfo.roomIdentifier?.trim() || 'Room');
                     const mDate = reportType === 'checkout' ? (tenancyInfo.checkOutDate || 'NoDate') : (tenancyInfo.moveInDate || 'NoDate');
                     const filePrefix = reportType === 'checkout' ? 'Checkout' : 'Inventory';
-                    // FIX: Escaped forward slashes inside the path exclusion regex arrays
+                    // FIX: Escaped forward slashes inside path regex arrays
                     safeFilename = `${filePrefix}_${tName}_${rNum}_${mDate}`.replace(/[\/\\?%*:|"<>]/g, '_').trim() + '.pdf';
                 }
 
@@ -2023,7 +2022,7 @@ Condition: [Detailed Condition Only]
 
                                         <div className="flex justify-end pt-4 border-t border-gray-100 break-inside-avoid">
                                             <div className="w-64 border border-gray-300 rounded-xl p-4 bg-gray-50 text-center shadow-sm">
-                                                <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest border-b border-gray-200 pb-1.5 mb-3">Authorized Sign-off</p>
+                                                <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest border-b-2 border-gray-200 pb-1.5 mb-3">Authorized Sign-off</p>
                                                 <div className="h-16 flex items-center justify-center mb-3 bg-white rounded border border-gray-200">
                                                     {fireSafetyData.signature ? (
                                                         <img src={fireSafetyData.signature} className="max-h-full max-w-full mix-blend-multiply" alt="Authorized Signature" />
@@ -2078,8 +2077,8 @@ Condition: [Detailed Condition Only]
                             )}
 
                         </div>
-                    </div>
-                ) : null}
+                    </>
+                )}
 
             </div>
 
