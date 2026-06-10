@@ -305,7 +305,7 @@ export default function App() {
     const [pdfFile, setPdfFile] = useState(null);
     const [pdfMeta, setPdfMeta] = useState({ type: 'inventory', date: '', inspector: '', label: '' });
 
-    // Tenant Comment States
+    // Tenant Response States
     const [showTenantComment, setShowTenantComment] = useState(false);
     const [tenantCommentReportId, setTenantCommentReportId] = useState(null);
     const [tenantCommentText, setTenantCommentText] = useState('');
@@ -437,7 +437,7 @@ export default function App() {
         };
         window.addEventListener('keydown', handleKey);
         return () => window.removeEventListener('keydown', handleKey);
-    }, [showApiSettings, lightboxImage, showPdfUpload]);
+    }, [showApiSettings, lightboxImage, showPdfUpload, showTenantComment]);
 
     const handleSelectProperty = async (id) => {
         setSelectedPropertyId(id);
@@ -934,6 +934,7 @@ export default function App() {
                 }
 
                 let safeFilename = 'Report.pdf';
+                // FIX: Escaped forward slashes inside the path exclusion regex arrays
                 const propStr = currentProperty?.address ? currentProperty.address.slice(0, 20).replace(/[\/\\?%*:|"<>]/g, '_') : 'Property';
 
                 if (reportType === 'maintenance') {
@@ -947,6 +948,7 @@ export default function App() {
                     const rNum = (reportType === 'checkout' && tenancyInfo.checkoutScope === 'property') ? 'Full_Property' : (tenancyInfo.roomIdentifier?.trim() || 'Room');
                     const mDate = reportType === 'checkout' ? (tenancyInfo.checkOutDate || 'NoDate') : (tenancyInfo.moveInDate || 'NoDate');
                     const filePrefix = reportType === 'checkout' ? 'Checkout' : 'Inventory';
+                    // FIX: Escaped forward slashes inside the path exclusion regex arrays
                     safeFilename = `${filePrefix}_${tName}_${rNum}_${mDate}`.replace(/[\/\\?%*:|"<>]/g, '_').trim() + '.pdf';
                 }
 
@@ -1247,19 +1249,19 @@ Condition: [Detailed Condition Only]
 
             <div className="max-w-4xl mx-auto bg-white rounded-xl shadow-lg overflow-hidden print:shadow-none print:w-full print:max-w-full">
 
-<div className="bg-[#2f314b] text-white p-4 sm:p-6 print:hidden flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-4">
-  <div className="flex items-center gap-4 cursor-pointer" onClick={goHome}>
-    <img src={logoSrc} alt="Arlington Park Logo" crossOrigin="anonymous" className="h-10 sm:h-12 object-contain" />
-    <h1 className="text-xl sm:text-2xl font-bold">Arlington Park Reports</h1>
-  </div>
-  
-  {currentProperty?.address && (currentView === 'wizard' || currentView === 'view') && (
-    <div className="bg-white/10 px-4 py-2 rounded-lg border border-white/20 text-sm font-semibold max-w-md truncate">
-      <span className="text-white/60 font-normal block text-[11px] uppercase tracking-wider mb-0.5">Active Property</span>
-      {currentProperty.address}
-    </div>
-  )}
-</div>
+                <div className="bg-[#2f314b] text-white p-4 sm:p-6 print:hidden flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-4">
+                  <div className="flex items-center gap-4 cursor-pointer" onClick={goHome}>
+                    <img src={logoSrc} alt="Arlington Park Logo" crossOrigin="anonymous" className="h-10 sm:h-12 object-contain" />
+                    <h1 className="text-xl sm:text-2xl font-bold">Arlington Park Reports</h1>
+                  </div>
+                  
+                  {currentProperty?.address && (currentView === 'wizard' || currentView === 'view') && (
+                    <div className="bg-white/10 px-4 py-2 rounded-lg border border-white/20 text-sm font-semibold max-w-md truncate">
+                      <span className="text-white/60 font-normal block text-[11px] uppercase tracking-wider mb-0.5">Active Property</span>
+                      {currentProperty.address}
+                    </div>
+                  )}
+                </div>
 
                 {currentView === 'home' && (
                     <div className="flex flex-col items-center justify-center space-y-8 py-10 px-6 sm:py-16 bg-gray-50 min-h-[50vh]">
@@ -1360,7 +1362,7 @@ Condition: [Detailed Condition Only]
                                                     View PDF
                                                 </a>
                                             ) : (
-                                                <React.Fragment>
+                                                <>
                                                     <button onClick={() => handleViewSavedReport(report.id)} className="flex-1 sm:flex-none text-[#2f314b] bg-[#2f314b]/10 px-4 py-2 rounded font-bold hover:bg-[#2f314b]/20 transition text-center">
                                                         View
                                                     </button>
@@ -1370,7 +1372,7 @@ Condition: [Detailed Condition Only]
                                                     <button onClick={() => handleOpenTenantComment(report.id)} className="flex-1 sm:flex-none text-amber-700 bg-amber-50 px-4 py-2 rounded font-bold hover:bg-amber-100 transition text-center">
                                                         + Tenant Response
                                                     </button>
-                                                </React.Fragment>
+                                                </>
                                             )}
                                             <button onClick={() => handleDeleteReport(report.id)} className="flex-1 sm:flex-none text-red-600 bg-red-50 px-4 py-2 rounded font-bold hover:bg-red-100 transition text-center">
                                                 Delete
@@ -1384,7 +1386,7 @@ Condition: [Detailed Condition Only]
                 )}
 
                 {(currentView === 'wizard' || currentView === 'view') && (
-                    <React.Fragment>
+                    <>
                         {currentView === 'wizard' && step > 0 && (
                             <div className="flex border-b border-gray-200 print:hidden bg-gray-50">
                                 {[1, 2, 3].map(s => (
@@ -1870,59 +1872,214 @@ Condition: [Detailed Condition Only]
                                         </div>
                                     )}
 
-                                    <div className="flex justify-end mt-12 break-inside-avoid">
-                                        <div className="w-72 border-2 border-gray-300 rounded-lg p-5 bg-white shadow-sm">
-                                            <p className="text-[10px] text-gray-500 font-black uppercase tracking-widest border-b-2 border-gray-200 pb-2 mb-4 text-center">Authorized Sign-off</p>
-                                            <div className="h-16 flex items-center justify-center mb-4 bg-gray-50 rounded border border-dashed border-gray-300">
-                                                {fireSafetyData.signature ? (
-                                                    <img src={fireSafetyData.signature} className="max-h-full max-w-full mix-blend-multiply" alt="Signature" crossOrigin="anonymous" />
-                                                ) : (
-                                                    <span className="text-gray-400 italic text-[10px] font-bold">No signature provided</span>
-                                                )}
-                                            </div>
-                                            <p className="text-center font-black text-[14px] uppercase tracking-wide text-[#2f314b]">{tenancyInfo.clerkName || 'Inspector'}</p>
+                                    {canProceedToStep3 && (
+                                        <div className="mt-8 pt-6 border-t border-gray-200 flex justify-end print:hidden">
+                                            <button onClick={() => setStep(3)} className="bg-[#2f314b] text-white px-8 py-3 rounded-xl font-bold shadow hover:bg-[#2f314b]/90 transition text-md">
+                                                Proceed to Review & Sign-off →
+                                            </button>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+
+                            {/* --- STEP 3 & SAVED REPORT PRINT-VIEW CONTAINER --- */}
+                            {(currentView === 'view' || step === 3) && (
+                                <div className="space-y-6">
+                                    <div className="flex justify-between items-center bg-gray-50 p-4 rounded-xl border border-gray-200 print:hidden">
+                                        <button onClick={goPortfolio} className="font-bold text-gray-600 hover:text-black transition">
+                                            ← Back to Portfolio
+                                        </button>
+                                        <div className="flex gap-3">
+                                            {currentView === 'wizard' && (
+                                                <button onClick={() => setStep(2)} className="bg-gray-200 text-gray-700 px-5 py-2 rounded-lg font-bold hover:bg-gray-300 transition">
+                                                    ← Edit Content
+                                                </button>
+                                            )}
+                                            <button onClick={handleDownloadPDFWrapper} disabled={isProcessing} className="bg-[#2f314b] text-white px-6 py-2 rounded-lg font-bold shadow hover:bg-[#2f314b]/90 transition">
+                                                {isProcessing ? 'Generating PDF...' : 'Download PDF Report'}
+                                            </button>
                                         </div>
                                     </div>
 
-{/* --- TENANT COMMENTS SECTION (rendered in view/print) --- */}
-                                    {selectedReportComments.length > 0 && (
-                                        <div className="mt-10 border-t-4 border-amber-300 pt-8 break-inside-avoid">
-                                            <h3 className="text-lg font-black text-amber-800 uppercase tracking-widest mb-6 flex items-center gap-2">
-                                                <span className="inline-block w-3 h-3 rounded-full bg-amber-400"></span>
-                                                Tenant Responses
-                                            </h3>
-                                            <div className="space-y-6">
-                                                {selectedReportComments.map((comment) => (
-                                                    <div key={comment.id} className="bg-amber-50 border border-amber-200 rounded-xl p-5 shadow-sm">
-                                                        <div className="flex justify-between items-start mb-3">
-                                                            <span className="font-bold text-amber-900 text-sm uppercase tracking-wide">{comment.tenantName}</span>
-                                                            <span className="text-[11px] text-amber-700 font-medium">{formatOrdinalDateTime(comment.submittedAt)}</span>
-                                                        </div>
-                                                        {comment.text && <p className="text-sm text-gray-800 leading-relaxed whitespace-pre-line mb-4">{comment.text}</p>}
-                                                        {comment.images && comment.images.length > 0 && (
-                                                            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 mt-3">
-                                                                {comment.images.map((img) => (
-                                                                    <img
-                                                                        key={img.id}
-                                                                        src={img.url}
-                                                                        alt="Tenant photo"
-                                                                        className="w-full h-28 object-cover rounded-lg border border-amber-200 cursor-zoom-in"
-                                                                        onClick={() => setLightboxImage(img)}
-                                                                    />
-                                                                ))}
-                                                            </div>
-                                                        )}
-                                                    </div>
-                                                ))}
+                                    <div id="printable-report" className="bg-white p-6 sm:p-10 border border-gray-200 rounded-xl shadow-sm space-y-8 text-sm">
+                                        <div className="flex justify-between items-start border-b-4 border-[#2f314b] pb-6">
+                                            <div>
+                                                <h2 className="text-2xl font-black text-gray-900 tracking-wide uppercase">{formatType(reportType)} Report</h2>
+                                                <p className="text-gray-600 font-semibold mt-1">{currentProperty?.address}</p>
+                                                <p className="text-xs text-gray-500 mt-1">Generated on: {formatOrdinalDate(new Date().toISOString().split('T')[0])}</p>
                                             </div>
+                                            <img src={logoSrc} alt="Arlington Park Logo" className="h-14 object-contain" />
+                                        </div>
+
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-gray-50 p-4 rounded-xl border border-gray-200">
+                                            {reportType === 'maintenance' ? (
+                                                <>
+                                                    <p><strong>Inspection Date:</strong> {formatOrdinalDate(maintenanceMeta.date)}</p>
+                                                    <p><strong>Inspector Name:</strong> {maintenanceMeta.clerkName || 'Not specified'}</p>
+                                                </>
+                                            ) : (
+                                                <>
+                                                    {tenancyInfo.tenantName && <p><strong>Tenant Name:</strong> {tenancyInfo.tenantName}</p>}
+                                                    {tenancyInfo.roomIdentifier && reportType !== 'fire_safety' && <p><strong>Room Identifier:</strong> {tenancyInfo.roomIdentifier}</p>}
+                                                    {tenancyInfo.moveInDate && reportType === 'inventory' && <p><strong>Move-in Date:</strong> {formatOrdinalDate(tenancyInfo.moveInDate)}</p>}
+                                                    {tenancyInfo.checkOutDate && reportType === 'checkout' && <p><strong>Check-out Date:</strong> {formatOrdinalDate(tenancyInfo.checkOutDate)}</p>}
+                                                    <p><strong>Inspection Date:</strong> {formatOrdinalDate(tenancyInfo.dateOfInventory)}</p>
+                                                    <p><strong>Inspector Name:</strong> {tenancyInfo.clerkName || 'Not specified'}</p>
+                                                </>
+                                            )}
+                                        </div>
+
+                                        {!isMultiRoom && reportType !== 'fire_safety' && (
+                                            <div className="space-y-6">
+                                                <div className="prose max-w-none bg-white p-4 border border-gray-200 rounded-lg shadow-inner">
+                                                    <h4 className="font-bold text-gray-900 mb-2 uppercase tracking-wide border-b border-gray-100 pb-1">Condition Details</h4>
+                                                    {renderReportText(mainReport)}
+                                                </div>
+                                                {mainImages.length > 0 && (
+                                                    <div>
+                                                        <h4 className="font-bold text-gray-900 mb-3 uppercase tracking-wide">Photographic Evidence</h4>
+                                                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+                                                            {mainImages.map((img, idx) => (
+                                                                <div key={img.id} className="border border-gray-200 rounded-lg overflow-hidden bg-gray-50 flex flex-col">
+                                                                    <img src={img.url || `data:${img.mimeType};base64,${img.data}`} alt={`Evidence ${idx + 1}`} className="w-full h-40 object-cover" />
+                                                                    <div className="p-2 text-center text-xs bg-gray-100 font-bold border-t border-gray-200">
+                                                                        Image {idx + 1} {img.room ? `- ${img.room}` : ''}
+                                                                    </div>
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
+
+                                        {isMultiRoom && (
+                                            <div className="space-y-6">
+                                                {multiRoomData.map((room, rIdx) => {
+                                                    if (!room.report && room.images.length === 0) return null;
+                                                    return (
+                                                        <div key={room.id} className="border border-gray-200 rounded-xl p-4 bg-white space-y-4 break-inside-avoid">
+                                                            <h4 className="font-black text-gray-900 text-base uppercase tracking-wide border-b border-gray-200 pb-1">
+                                                                {rIdx + 1}. {room.name || 'Unnamed Room'}
+                                                            </h4>
+                                                            {room.report && (
+                                                                <div className="bg-gray-50 p-3 rounded-lg border border-gray-100">
+                                                                    {renderReportText(room.report)}
+                                                                </div>
+                                                            )}
+                                                            {room.images.length > 0 && (
+                                                                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                                                                    {room.images.map((img, iIdx) => (
+                                                                        <div key={img.id} className="border border-gray-200 rounded-lg overflow-hidden bg-gray-50">
+                                                                            <img src={img.url || `data:${img.mimeType};base64,${img.data}`} alt={`${room.name} evidence ${iIdx + 1}`} className="w-full h-28 object-cover" />
+                                                                            <div className="p-1.5 text-center text-[10px] bg-gray-100 font-semibold border-t border-gray-200">
+                                                                                Image {iIdx + 1}
+                                                                            </div>
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        )}
+
+                                        {reportType === 'fire_safety' && (
+                                            <div className="space-y-6">
+                                                <div>
+                                                    <h4 className="font-bold text-gray-900 mb-3 uppercase tracking-wide">Testing Matrices</h4>
+                                                    <table className="w-full text-left border-collapse border border-gray-200">
+                                                        <thead>
+                                                            <tr className="bg-gray-100 border-b border-gray-200 text-xs font-bold uppercase text-gray-700">
+                                                                <th className="p-2">Equipment</th>
+                                                                <th className="p-2 text-center">Status</th>
+                                                                <th className="p-2 text-center">Qty</th>
+                                                                <th className="p-2">Location(s)</th>
+                                                                <th className="p-2">Duration</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody>
+                                                            <AlarmRow title="Smoke Detectors" config={fireSafetyData.smoke} />
+                                                            <AlarmRow title="CO Alarms" config={fireSafetyData.co} />
+                                                            <AlarmRow title="Heat Detectors" config={fireSafetyData.heat} />
+                                                            <AlarmRow title="Emergency Lighting" config={fireSafetyData.emergency} />
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+
+                                                <div className="bg-gray-50 p-4 rounded-xl border border-gray-200 space-y-3">
+                                                    <p><strong>Faults Flagged:</strong> {fireSafetyData.hasFaults ? 'YES' : 'NO'}</p>
+                                                    {fireSafetyData.hasFaults && (
+                                                        <>
+                                                            <p><strong>Defect Specs:</strong> {fireSafetyData.faults}</p>
+                                                            <p><strong>Action Targets:</strong> {fireSafetyData.actionPlan}</p>
+                                                            <p><strong>Resolution:</strong> {fireSafetyData.isResolved ? `COMPLETED on ${formatOrdinalDateTime(fireSafetyData.resolvedDate)} by ${fireSafetyData.resolvedBy}` : 'OUTSTANDING'}</p>
+                                                        </>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        <div className="flex justify-end pt-4 border-t border-gray-100 break-inside-avoid">
+                                            <div className="w-64 border border-gray-300 rounded-xl p-4 bg-gray-50 text-center shadow-sm">
+                                                <p className="text-[10px] text-gray-400 font-black uppercase tracking-widest border-b border-gray-200 pb-1.5 mb-3">Authorized Sign-off</p>
+                                                <div className="h-16 flex items-center justify-center mb-3 bg-white rounded border border-gray-200">
+                                                    {fireSafetyData.signature ? (
+                                                        <img src={fireSafetyData.signature} className="max-h-full max-w-full mix-blend-multiply" alt="Authorized Signature" />
+                                                    ) : (
+                                                        <span className="text-gray-400 italic text-[10px] font-medium">No signature captured</span>
+                                                    )}
+                                                </div>
+                                                <p className="font-black text-sm uppercase tracking-wide text-[#2f314b]">{tenancyInfo.clerkName || maintenanceMeta.clerkName || 'Inspector'}</p>
+                                            </div>
+                                        </div>
+
+                                        {/* --- TENANT COMMENTARY PRINT AREA --- */}
+                                        {selectedReportComments.length > 0 && (
+                                            <div className="mt-8 border-t-2 border-amber-300 pt-6 break-inside-avoid">
+                                                <h4 className="text-sm font-black text-amber-800 uppercase tracking-wider mb-4 flex items-center gap-1.5">
+                                                    <span className="inline-block w-2.5 h-2.5 rounded-full bg-amber-400"></span>
+                                                    Appendice: Tenant Responses
+                                                </h4>
+                                                <div className="space-y-4">
+                                                    {selectedReportComments.map((comment) => (
+                                                        <div key={comment.id} className="bg-amber-50/60 border border-amber-200 rounded-xl p-4 space-y-3">
+                                                            <div className="flex justify-between items-center border-b border-amber-100 pb-1.5">
+                                                                <span className="font-bold text-amber-900 text-xs uppercase tracking-wide">{comment.tenantName}</span>
+                                                                <span className="text-[10px] text-amber-700 font-semibold">{formatOrdinalDateTime(comment.submittedAt)}</span>
+                                                            </div>
+                                                            {comment.text && <p className="text-xs text-gray-800 leading-relaxed whitespace-pre-line">{comment.text}</p>}
+                                                            {comment.images && comment.images.length > 0 && (
+                                                                <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+                                                                    {comment.images.map((img) => (
+                                                                        <img key={img.id} src={img.url} alt="Tenant attachment" className="w-full h-20 object-cover rounded-lg border border-amber-200" />
+                                                                    ))}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    {currentView === 'wizard' && (
+                                        <div className="flex justify-end gap-3 print:hidden pt-4">
+                                            <button onClick={() => setStep(2)} className="px-6 py-3 font-bold text-gray-600 hover:bg-gray-200 rounded-xl transition">
+                                                ← Back to Forms
+                                            </button>
+                                            <button onClick={handleSaveReportToPortfolio} disabled={isProcessing} className="px-8 py-3 font-bold bg-green-600 text-white rounded-xl hover:bg-green-700 transition shadow-md">
+                                                {isProcessing ? 'Saving...' : 'Confirm & Save Report'}
+                                            </button>
                                         </div>
                                     )}
                                 </div>
                             )}
 
                         </div>
-                    </React.Fragment>
-                )}
+                    </div>
+                ) : null}
 
             </div>
 
