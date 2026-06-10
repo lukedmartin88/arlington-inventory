@@ -1884,7 +1884,7 @@ Condition: [Detailed Condition Only]
                                         </div>
                                     </div>
 
-                                    {/* --- TENANT COMMENTS SECTION (rendered in view/print) --- */}
+{/* --- TENANT COMMENTS SECTION (rendered in view/print) --- */}
                                     {selectedReportComments.length > 0 && (
                                         <div className="mt-10 border-t-4 border-amber-300 pt-8 break-inside-avoid">
                                             <h3 className="text-lg font-black text-amber-800 uppercase tracking-widest mb-6 flex items-center gap-2">
@@ -1917,15 +1917,14 @@ Condition: [Detailed Condition Only]
                                             </div>
                                         </div>
                                     )}
-                                </div>
+                                </div> {/* Closes <div className="space-y-8"> */}
+                            )} {/* Closes {currentView === 'wizard' && step === 2 && ( */}
+
+                        </div> {/* Closes <div className="p-6 sm:p-8"> */}
                     </React.Fragment>
-                            )}
+                )} {/* Closes {(currentView === 'wizard' || currentView === 'view') && ( */}
 
-                        </div>
-                    </div>
-                ) : null}
-
-            </div>
+            </div> {/* Closes <div className="max-w-4xl mx-auto..."> */}
 
             {/* --- LEGACY PDF UPLOAD MODAL --- */}
             {showPdfUpload && (
