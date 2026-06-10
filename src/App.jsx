@@ -1360,7 +1360,7 @@ Condition: [Detailed Condition Only]
                                                     View PDF
                                                 </a>
                                             ) : (
-                                                <>
+                                                <React.Fragment>
                                                     <button onClick={() => handleViewSavedReport(report.id)} className="flex-1 sm:flex-none text-[#2f314b] bg-[#2f314b]/10 px-4 py-2 rounded font-bold hover:bg-[#2f314b]/20 transition text-center">
                                                         View
                                                     </button>
@@ -1370,7 +1370,7 @@ Condition: [Detailed Condition Only]
                                                     <button onClick={() => handleOpenTenantComment(report.id)} className="flex-1 sm:flex-none text-amber-700 bg-amber-50 px-4 py-2 rounded font-bold hover:bg-amber-100 transition text-center">
                                                         + Tenant Response
                                                     </button>
-                                                </>
+                                                </React.Fragment>
                                             )}
                                             <button onClick={() => handleDeleteReport(report.id)} className="flex-1 sm:flex-none text-red-600 bg-red-50 px-4 py-2 rounded font-bold hover:bg-red-100 transition text-center">
                                                 Delete
@@ -1384,7 +1384,7 @@ Condition: [Detailed Condition Only]
                 )}
 
                 {(currentView === 'wizard' || currentView === 'view') && (
-                    <>
+                    <React.Fragment>
                         {currentView === 'wizard' && step > 0 && (
                             <div className="flex border-b border-gray-200 print:hidden bg-gray-50">
                                 {[1, 2, 3].map(s => (
@@ -1918,7 +1918,7 @@ Condition: [Detailed Condition Only]
                                         </div>
                                     )}
                                 </div>
-                                </>
+                    </React.Fragment>
                             )}
 
                         </div>
