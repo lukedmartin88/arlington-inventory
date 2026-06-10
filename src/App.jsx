@@ -1921,6 +1921,7 @@ Condition: [Detailed Condition Only]
                                             </div>
                                         );
                                     })()}
+                                </div>
                                 </>
                             )}
 
