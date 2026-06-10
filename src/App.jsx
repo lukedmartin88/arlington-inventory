@@ -56,7 +56,8 @@ const callGeminiWithFallback = async (payload, activeApiKey) => {
     const defaultModels = [
         'gemini-3.5-flash',
         'gemini-3.0-flash',
-        'gemini-2.5-flash'
+        'gemini-2.5-flash',
+        'gemini-1.5-flash'
     ];
 
     for (const model of defaultModels) {
@@ -156,6 +157,7 @@ const dbGetReport = async (id) => {
     throw new Error("Report not found in database.");
 };
 
+// FIX: Re-added explicitly defining the MIME type in the upload string
 const uploadImageToStorage = async (reportId, imageId, mimeType, base64Data) => {
     const path = `reports/${reportId}/${imageId}`;
     const imageRef = ref(storage, path);
@@ -163,7 +165,7 @@ const uploadImageToStorage = async (reportId, imageId, mimeType, base64Data) => 
         setTimeout(() => reject(new Error("Network timeout: Firebase upload took too long.")), 15000)
     );
     await Promise.race([
-        uploadString(imageRef, base64Data, 'base64'),
+        uploadString(imageRef, base64Data, 'base64', { contentType: mimeType }),
         timeoutPromise
     ]);
     return await getDownloadURL(imageRef);
@@ -303,6 +305,13 @@ export default function App() {
     const [pdfFile, setPdfFile] = useState(null);
     const [pdfMeta, setPdfMeta] = useState({ type: 'inventory', date: '', inspector: '', label: '' });
 
+    // Tenant Comment States
+    const [showTenantComment, setShowTenantComment] = useState(false);
+    const [tenantCommentReportId, setTenantCommentReportId] = useState(null);
+    const [tenantCommentText, setTenantCommentText] = useState('');
+    const [tenantCommentImages, setTenantCommentImages] = useState([]);
+    const [tenantCommentName, setTenantCommentName] = useState('');
+
     const [activeApiKey, setActiveApiKey] = useState(getEnvKey());
     const [step, setStep] = useState(0);
     const [reportType, setReportType] = useState(null); 
@@ -411,15 +420,17 @@ export default function App() {
         if (e.target === e.currentTarget) {
             setShowApiSettings(false);
             setShowPdfUpload(false);
+            setShowTenantComment(false);
         }
     };
 
     useEffect(() => {
-        if (!showApiSettings && !lightboxImage && !showPdfUpload) return;
+        if (!showApiSettings && !lightboxImage && !showPdfUpload && !showTenantComment) return;
         const handleKey = (e) => { 
             if (e.key === 'Escape') {
                 setShowApiSettings(false);
                 setShowPdfUpload(false);
+                setShowTenantComment(false);
                 setLightboxImage(null);
             }
         };
@@ -694,6 +705,62 @@ export default function App() {
             } catch (e) {
                 alert(e.message);
             }
+        }
+    };
+
+    const handleOpenTenantComment = (reportId) => {
+        setTenantCommentReportId(reportId);
+        setTenantCommentText('');
+        setTenantCommentImages([]);
+        setTenantCommentName('');
+        setShowTenantComment(true);
+    };
+
+    const handleTenantCommentImageUpload = async (e) => {
+        const files = Array.from(e.target.files);
+        if (files.length === 0) return;
+        const results = await Promise.all(files.map(f => compressImage(f)));
+        setTenantCommentImages(prev => [...prev, ...results.filter(r => !r.failed)]);
+        e.target.value = '';
+    };
+
+    const handleSaveTenantComment = async () => {
+        if (!tenantCommentText.trim() && tenantCommentImages.length === 0) return;
+        setIsProcessing(true);
+        setErrorMsg('');
+        try {
+            setLoadingState({ active: true, progress: 20, text: 'Uploading tenant images...' });
+            const uploadedImages = await Promise.all(
+                tenantCommentImages.map(async (img) => {
+                    if (img.data) {
+                        const url = await uploadImageToStorage(tenantCommentReportId, `tenant_${img.id}`, img.mimeType, img.data);
+                        return { id: img.id, url, mimeType: img.mimeType };
+                    }
+                    return img;
+                })
+            );
+            setLoadingState({ active: true, progress: 70, text: 'Saving to report...' });
+            const report = await dbGetReport(tenantCommentReportId);
+            const newComment = {
+                id: newId(),
+                tenantName: tenantCommentName.trim() || 'Tenant',
+                text: tenantCommentText.trim(),
+                images: uploadedImages,
+                submittedAt: new Date().toISOString(),
+            };
+            const updatedComments = [...(report.data.tenantComments || []), newComment];
+            const updatedReport = { ...report, data: { ...report.data, tenantComments: updatedComments } };
+            await dbPut(STORE_REPORTS, updatedReport);
+            setLoadingState({ active: true, progress: 100, text: 'Saved!' });
+            await new Promise(r => setTimeout(r, 700));
+            setShowTenantComment(false);
+            const reports = await dbGetReportsByProperty(selectedPropertyId);
+            setPropertyReports(reports.sort((a, b) => new Date(b.reportDate) - new Date(a.reportDate)));
+        } catch (err) {
+            setErrorMsg(`Failed to save comment: ${err.message}`);
+        } finally {
+            setIsProcessing(false);
+            setLoadingState({ active: false, progress: 0, text: '' });
         }
     };
 
@@ -1299,6 +1366,9 @@ Condition: [Detailed Condition Only]
                                                     <button onClick={() => handleUseAsTemplate(report.id)} className="flex-1 sm:flex-none text-blue-600 bg-blue-50 px-4 py-2 rounded font-bold hover:bg-blue-100 transition text-center">
                                                         Use as Template
                                                     </button>
+                                                    <button onClick={() => handleOpenTenantComment(report.id)} className="flex-1 sm:flex-none text-amber-700 bg-amber-50 px-4 py-2 rounded font-bold hover:bg-amber-100 transition text-center">
+                                                        + Tenant Response
+                                                    </button>
                                                 </>
                                             )}
                                             <button onClick={() => handleDeleteReport(report.id)} className="flex-1 sm:flex-none text-red-600 bg-red-50 px-4 py-2 rounded font-bold hover:bg-red-100 transition text-center">
@@ -1799,257 +1869,6 @@ Condition: [Detailed Condition Only]
                                         </div>
                                     )}
 
-                                    <div className="flex justify-between items-center pt-6 border-t border-gray-200">
-                                        <button onClick={() => setStep(1)} className="text-gray-600 px-8 py-3 font-bold hover:bg-gray-100 rounded-xl transition">← Back</button>
-                                        <button onClick={() => setStep(3)} disabled={!canProceedToStep3} className="bg-[#2f314b] text-white px-10 py-4 rounded-xl font-bold shadow-md hover:bg-[#2f314b]/90 transition disabled:opacity-50 disabled:cursor-not-allowed text-lg">
-                                            Proceed to Final Review →
-                                        </button>
-                                    </div>
-                                    {!canProceedToStep3 && <p className="text-sm font-bold text-red-500 text-right mt-2">Ensure reports contain text/images, and safety checks are signed.</p>}
-                                </div>
-                            )}
-
-                        </div>
-                    </>
-                )}
-
-                {(currentView === 'wizard' && step === 3) || currentView === 'view' ? (
-                    <div className="p-6 sm:p-8 bg-gray-50 border-t border-gray-200">
-                        {pdfFallbackMsg && (
-                            <div className="p-4 bg-amber-50 text-amber-800 rounded-xl text-sm border-2 border-amber-200 print:hidden mb-6 font-bold">{pdfFallbackMsg}</div>
-                        )}
-                        
-                        {loadingState.active && (
-                            <div className="bg-[#2f314b]/5 p-5 rounded-xl border border-[#2f314b]/10 mb-6 print:hidden animate-in fade-in">
-                                <div className="flex justify-between text-sm text-[#2f314b] font-bold mb-3 uppercase tracking-wider">
-                                    <span>{loadingState.text}</span><span>{Math.round(loadingState.progress)}%</span>
-                                </div>
-                                <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
-                                    <div className="bg-[#2f314b] h-3 rounded-full transition-all duration-300" style={{ width: `${loadingState.progress}%` }}></div>
-                                </div>
-                            </div>
-                        )}
-
-                        {errorMsg && (
-                            <div className="p-4 bg-red-50 text-red-700 rounded-xl text-sm border-2 border-red-200 mb-6 print:hidden font-bold">
-                                {errorMsg}
-                            </div>
-                        )}
-
-                        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 print:hidden mb-8">
-                            {currentView === 'wizard' ? (
-                                <>
-                                    <button onClick={() => setStep(2)} disabled={isProcessing} className="text-gray-600 px-6 py-3 font-bold hover:bg-gray-200 rounded-xl transition disabled:opacity-50">← Back to Editor</button>
-                                    <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
-                                        <button onClick={handleSaveReportToPortfolio} disabled={isProcessing} className="bg-green-600 text-white px-6 py-3 rounded-xl font-bold shadow hover:bg-green-700 transition disabled:opacity-50 flex-1 sm:flex-none text-center">
-                                            {isProcessing ? 'Saving...' : '💾 Save to Portfolio'}
-                                        </button>
-                                        <button onClick={handleDownloadPDFWrapper} disabled={isProcessing} className="bg-[#2f314b] text-white px-8 py-3 rounded-xl font-bold shadow hover:bg-[#2f314b]/90 transition disabled:opacity-50 flex-1 sm:flex-none text-center">
-                                            {isProcessing ? 'Generating...' : 'Download PDF'}
-                                        </button>
-                                    </div>
-                                </>
-                            ) : (
-                                <>
-                                    <div className="flex gap-3">
-                                        <button onClick={goPortfolio} disabled={isProcessing} className="text-gray-600 px-6 py-3 font-bold hover:bg-gray-200 rounded-xl transition disabled:opacity-50">← Back to Portfolio</button>
-                                        <button onClick={handleEditReport} disabled={isProcessing} className="text-[#2f314b] bg-[#2f314b]/10 px-6 py-3 font-bold hover:bg-[#2f314b]/20 rounded-xl transition disabled:opacity-50">Edit Report</button>
-                                    </div>
-                                    <button onClick={handleDownloadPDFWrapper} disabled={isProcessing} className="bg-[#2f314b] text-white px-8 py-3 rounded-xl font-bold shadow hover:bg-[#2f314b]/90 transition disabled:opacity-50 w-full sm:w-auto text-center">
-                                        {isProcessing ? 'Generating...' : 'Download PDF'}
-                                    </button>
-                                </>
-                            )}
-                        </div>
-
-                        <div className="bg-white p-10 print:p-0 max-w-[210mm] mx-auto shadow-lg border border-gray-200 text-gray-900" id="printable-report" style={{ fontFamily: "Arial, sans-serif" }}>
-
-                            {!isMultiRoom && (reportType === 'inventory' || reportType === 'checkout') && (
-                                <>
-                                    <div className="mb-8 text-center flex flex-col items-center border-b-2 border-gray-100 pb-6">
-                                        <img src={logoSrc} alt="Arlington Park" crossOrigin="anonymous" style={{ height: '72px' }} className="mb-4 object-contain" />
-                                        <h2 className="text-[18px] font-black uppercase tracking-widest text-[#2f314b]">
-                                            {reportType === 'checkout' ? 'Check-Out Report & Schedule of Condition' : 'Property Inventory & Schedule of Condition'}
-                                        </h2>
-                                    </div>
-
-                                    <div className="grid grid-cols-1 gap-2 mb-8 text-[12px] bg-gray-50 p-4 rounded-lg border border-gray-200">
-                                        <div className="flex"><span className="w-48 font-bold text-gray-600 uppercase tracking-wide">Property Address:</span><span className="font-bold">{tenancyInfo.roomIdentifier ? `${tenancyInfo.roomIdentifier}, ` : ''}{currentProperty?.address || ''}</span></div>
-                                        <div className="flex"><span className="w-48 font-bold text-gray-600 uppercase tracking-wide">Tenant Name:</span> <span className="font-medium">{tenancyInfo.tenantName || ''}</span></div>
-                                        <div className="flex"><span className="w-48 font-bold text-gray-600 uppercase tracking-wide">{reportType === 'checkout' ? 'Check-out Date:' : 'Move-in Date:'}</span> <span className="font-medium">{formatOrdinalDate(reportType === 'checkout' ? tenancyInfo.checkOutDate : tenancyInfo.moveInDate)}</span></div>
-                                        <div className="flex"><span className="w-48 font-bold text-gray-600 uppercase tracking-wide">Inspection Date:</span> <span className="font-medium">{formatOrdinalDate(tenancyInfo.dateOfInventory)}</span></div>
-                                        <div className="flex"><span className="w-48 font-bold text-gray-600 uppercase tracking-wide">Inspected By:</span> <span className="font-medium">{tenancyInfo.clerkName || ''}</span></div>
-                                    </div>
-
-                                    <div className="mb-10 text-[12px]">
-                                        {renderReportText(mainReport)}
-                                    </div>
-
-                                    <div className="mt-8 break-inside-avoid bg-gray-50 p-6 rounded-lg border border-gray-200">
-                                        <h3 className="text-[14px] font-black mb-4 uppercase tracking-wide border-b border-gray-300 pb-2">Declaration</h3>
-                                        <p className="text-[12px] mb-8 font-medium">This report is a fair and accurate representation of the property at the time of inspection.</p>
-                                        <div className="space-y-5 text-[12px]">
-                                            <p><strong className="uppercase text-gray-600 mr-2">Signed (Agent):</strong> <span className="border-b border-black inline-block w-64 pb-1">{tenancyInfo.clerkName || ''}</span></p>
-                                            <p><strong className="uppercase text-gray-600 mr-2">Date:</strong> <span className="border-b border-black inline-block w-64 pb-1">{formatOrdinalDate(tenancyInfo.dateOfInventory) || ''}</span></p>
-                                        </div>
-                                    </div>
-
-                                    {mainImages.length > 0 && (
-                                        <div className="html2pdf__page-break w-full mt-10 pt-8 border-t-4 border-gray-800" style={{ fontSize: 0 }}>
-                                            <h3 className="text-[16px] font-black mb-6 uppercase tracking-widest text-center bg-gray-100 py-2 border border-gray-200" style={{ fontSize: '16px' }}>Photographic Evidence</h3>
-                                            <div className="block w-full">
-                                                {mainImages.map((img, idx) => (
-                                                    <div key={img.id} className="break-inside-avoid inline-block align-top mb-6" style={{ width: '31%', marginRight: idx % 3 === 2 ? '0' : '3.5%', fontSize: '12px' }}>
-                                                        <div className="bg-gray-100 p-1 border border-gray-300 border-b-0 rounded-t-lg">
-                                                            <p className="text-[10px] font-bold text-gray-700 uppercase tracking-wider text-center">
-                                                                Image {idx + 1}
-                                                            </p>
-                                                            {img.room && <p className="text-[10px] text-gray-500 font-bold text-center truncate px-1" title={img.room}>{img.room}</p>}
-                                                        </div>
-                                                        <img src={img.data ? `data:${img.mimeType};base64,${img.data}` : img.url} crossOrigin={img.data ? undefined : "anonymous"} className="w-full h-40 object-cover rounded-b-lg shadow-sm border border-gray-300 border-t-0" />
-                                                    </div>
-                                                ))}
-                                            </div>
-                                        </div>
-                                    )}
-                                </>
-                            )}
-
-                            {isMultiRoom && (
-                                <>
-                                    <div className="mb-8 text-center flex flex-col items-center border-b-2 border-gray-100 pb-6">
-                                        <img src={logoSrc} alt="Arlington Park" crossOrigin="anonymous" style={{ height: '72px' }} className="mb-4 object-contain" />
-                                        <h2 className="text-[18px] font-black uppercase tracking-widest text-[#2f314b]">
-                                            {reportType === 'maintenance' ? 'Property Maintenance Schedule' : 'Check-Out Report & Schedule of Condition'}
-                                        </h2>
-                                        {reportType === 'checkout' && <p className="text-gray-500 font-bold text-[11px] uppercase tracking-widest mt-1">Full Property Scope</p>}
-                                    </div>
-
-                                    <div className="grid grid-cols-1 gap-2 mb-10 text-[12px] bg-gray-50 p-4 rounded-lg border border-gray-200">
-                                        <div className="flex"><span className="w-48 font-bold text-gray-600 uppercase tracking-wide">Property Address:</span> <span className="font-bold">{currentProperty?.address}</span></div>
-                                        {reportType === 'checkout' && (
-                                            <>
-                                                <div className="flex"><span className="w-48 font-bold text-gray-600 uppercase tracking-wide">Tenant Name:</span> <span className="font-medium">{tenancyInfo.tenantName || ''}</span></div>
-                                                <div className="flex"><span className="w-48 font-bold text-gray-600 uppercase tracking-wide">Check-out Date:</span> <span className="font-medium">{formatOrdinalDate(tenancyInfo.checkOutDate)}</span></div>
-                                            </>
-                                        )}
-                                        <div className="flex"><span className="w-48 font-bold text-gray-600 uppercase tracking-wide">Inspection Date:</span> <span className="font-medium">{formatOrdinalDate(reportType === 'checkout' ? tenancyInfo.dateOfInventory : maintenanceMeta.date)}</span></div>
-                                        <div className="flex"><span className="w-48 font-bold text-gray-600 uppercase tracking-wide">Inspected By:</span> <span className="font-medium">{reportType === 'checkout' ? tenancyInfo.clerkName : maintenanceMeta.clerkName || ''}</span></div>
-                                    </div>
-
-                                    <div className="border-l-4 border-[#2f314b] pl-6 space-y-10">
-                                        {multiRoomData.map((room) => (
-                                            <div key={room.id} className="break-inside-avoid border border-gray-200 rounded-lg p-5 bg-white shadow-sm">
-                                                <h4 className="text-[16px] font-black mb-4 uppercase tracking-wide text-[#2f314b] border-b border-gray-100 pb-2">{room.name}</h4>
-                                                
-                                                {room.report && (
-                                                    <div className="mb-6 text-[12px] bg-gray-50 p-4 rounded border border-gray-100">
-                                                        {renderReportText(room.report)}
-                                                    </div>
-                                                )}
-
-                                                {room.images.length > 0 && (
-                                                    <div className="block w-full mt-4" style={{ fontSize: 0 }}>
-                                                        <h5 className="text-[12px] font-bold uppercase tracking-wide text-gray-500 mb-3">Evidence</h5>
-                                                        {room.images.map((img, iIdx) => (
-                                                            <div key={img.id} className="break-inside-avoid inline-block align-top mb-4" style={{ width: '31%', marginRight: iIdx % 3 === 2 ? '0' : '3.5%', fontSize: '12px' }}>
-                                                                <p className="text-[10px] font-bold mb-1 text-gray-500 uppercase tracking-wider text-center bg-gray-100 py-1 rounded-t border border-gray-300 border-b-0">Image {iIdx + 1}</p>
-                                                                <img src={img.data ? `data:${img.mimeType};base64,${img.data}` : img.url} crossOrigin={img.data ? undefined : "anonymous"} className="w-full h-32 object-cover rounded-b shadow-sm border border-gray-300" />
-                                                            </div>
-                                                        ))}
-                                                    </div>
-                                                )}
-                                            </div>
-                                        ))}
-                                    </div>
-
-                                    {reportType === 'checkout' && (
-                                        <div className="mt-8 break-inside-avoid bg-gray-50 p-6 rounded-lg border border-gray-200">
-                                            <h3 className="text-[14px] font-black mb-4 uppercase tracking-wide border-b border-gray-300 pb-2">Declaration</h3>
-                                            <p className="text-[12px] mb-8 font-medium">This report is a fair and accurate representation of the property at the time of inspection.</p>
-                                            <div className="space-y-5 text-[12px]">
-                                                <p><strong className="uppercase text-gray-600 mr-2">Signed (Agent):</strong> <span className="border-b border-black inline-block w-64 pb-1">{tenancyInfo.clerkName || ''}</span></p>
-                                                <p><strong className="uppercase text-gray-600 mr-2">Date:</strong> <span className="border-b border-black inline-block w-64 pb-1">{formatOrdinalDate(tenancyInfo.dateOfInventory) || ''}</span></p>
-                                            </div>
-                                        </div>
-                                    )}
-                                </>
-                            )}
-
-                            {reportType === 'fire_safety' && (
-                                <>
-                                    <div className="mb-6 text-center flex flex-col items-center border-b-2 border-red-600 pb-6">
-                                        <img src={logoSrc} alt="Arlington Park Logo" crossOrigin="anonymous" style={{ height: '60px' }} className="mb-3 object-contain" />
-                                        <h2 className="text-[20px] font-black uppercase tracking-widest text-[#2f314b]">Fire Safety Inspection</h2>
-                                        <p className="text-gray-500 font-bold text-[11px] uppercase tracking-widest mt-1">Official Record of Testing</p>
-                                    </div>
-
-                                    <div className="flex gap-4 mb-8 text-[12px]">
-                                        <div className="flex-1 border border-gray-300 p-5 rounded-lg bg-gray-50 shadow-sm">
-                                            <h3 className="text-[10px] text-gray-500 uppercase font-black tracking-widest mb-3 border-b border-gray-200 pb-1">Property Details</h3>
-                                            <p className="font-bold text-[14px] leading-relaxed">{currentProperty?.address}</p>
-                                        </div>
-                                        <div className="flex-1 border border-gray-300 p-5 rounded-lg bg-gray-50 shadow-sm">
-                                            <h3 className="text-[10px] text-gray-500 uppercase font-black tracking-widest mb-3 border-b border-gray-200 pb-1">Inspection Details</h3>
-                                            <p className="mb-2"><strong className="text-gray-700 uppercase text-[10px]">Date of Test:</strong> <span className="ml-2 font-medium">{formatOrdinalDate(tenancyInfo.dateOfInventory)}</span></p>
-                                            <p><strong className="text-gray-700 uppercase text-[10px]">Inspector:</strong> <span className="ml-2 font-medium">{tenancyInfo.clerkName || 'Not specified'}</span></p>
-                                        </div>
-                                    </div>
-
-                                    <h3 className="text-[13px] font-black uppercase tracking-widest border-b-2 border-black pb-1 mb-4 text-[#2f314b]">Equipment Testing Log</h3>
-                                    <table className="w-full mb-10 text-[12px] text-left border-collapse border border-gray-300 shadow-sm">
-                                        <thead className="bg-[#2f314b] text-white">
-                                            <tr>
-                                                <th className="p-3 font-bold uppercase tracking-wider text-[10px] w-1/4">Equipment Type</th>
-                                                <th className="p-3 font-bold uppercase tracking-wider text-[10px] text-center w-1/6">Status</th>
-                                                <th className="p-3 font-bold uppercase tracking-wider text-[10px] text-center w-1/6">Quantity</th>
-                                                <th className="p-3 font-bold uppercase tracking-wider text-[10px] w-1/4">Location</th>
-                                                <th className="p-3 font-bold uppercase tracking-wider text-[10px] w-1/6">Duration</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            <AlarmRow title="Smoke Detectors" config={fireSafetyData.smoke} />
-                                            <AlarmRow title="CO Alarms" config={fireSafetyData.co} />
-                                            <AlarmRow title="Heat Detectors" config={fireSafetyData.heat} />
-                                            <AlarmRow title="Emergency Lighting" config={fireSafetyData.emergency} />
-                                        </tbody>
-                                    </table>
-
-                                    <h3 className="text-[13px] font-black uppercase tracking-widest border-b-2 border-black pb-1 mb-4 text-[#2f314b]">Faults & Remedial Action</h3>
-                                    <div className={`p-6 mb-10 rounded-lg text-[12px] border-2 shadow-sm ${fireSafetyData.hasFaults ? 'border-red-500 bg-red-50' : 'border-green-500 bg-green-50'}`}>
-                                        {fireSafetyData.hasFaults ? (
-                                            <div className="flex gap-6">
-                                                <div className="flex-1 border-r-2 border-red-200 pr-6">
-                                                    <p className="font-black text-red-600 uppercase tracking-widest text-[11px] mb-2 border-b border-red-200 pb-1">Identified Faults</p>
-                                                    <p className="mb-6 font-medium leading-relaxed">{fireSafetyData.faults}</p>
-                                                    
-                                                    <p className="font-black text-red-600 uppercase tracking-widest text-[11px] mb-2 border-b border-red-200 pb-1">Action Plan</p>
-                                                    <p className="font-medium leading-relaxed">{fireSafetyData.actionPlan || 'Not specified'}</p>
-                                                </div>
-                                                <div className="flex-1 pl-2">
-                                                    <p className="font-black text-gray-800 uppercase tracking-widest text-[11px] mb-2 border-b border-gray-300 pb-1">Resolution Status</p>
-                                                    {fireSafetyData.isResolved ? (
-                                                        <div className="bg-white p-4 rounded border border-green-200 shadow-sm mt-3">
-                                                            <p className="font-black text-green-600 text-[14px] uppercase tracking-widest mb-3">✓ RESOLVED</p>
-                                                            <p className="text-gray-800 mb-2"><strong className="uppercase text-[10px] text-gray-500">Date:</strong> <span className="font-medium ml-2">{formatOrdinalDateTime(fireSafetyData.resolvedDate)}</span></p>
-                                                            <p className="text-gray-800"><strong className="uppercase text-[10px] text-gray-500">By:</strong> <span className="font-medium ml-2">{fireSafetyData.resolvedBy}</span></p>
-                                                        </div>
-                                                    ) : (
-                                                        <div className="bg-white p-4 rounded border border-red-200 shadow-sm mt-3">
-                                                            <p className="text-red-600 font-black text-[14px] uppercase tracking-widest">⚠ ACTION REQUIRED</p>
-                                                            <p className="text-xs font-medium text-red-400 mt-1 uppercase">Fault remains unresolved</p>
-                                                        </div>
-                                                    )}
-                                                </div>
-                                            </div>
-                                        ) : (
-                                            <div className="flex items-center justify-center py-4">
-                                                <span className="text-2xl mr-3">✓</span>
-                                                <p className="font-black text-green-700 text-[14px] uppercase tracking-widest m-0">No faults identified. Property is compliant.</p>
-                                            </div>
-                                        )}
-                                    </div>
-
                                     <div className="flex justify-end mt-12 break-inside-avoid">
                                         <div className="w-72 border-2 border-gray-300 rounded-lg p-5 bg-white shadow-sm">
                                             <p className="text-[10px] text-gray-500 font-black uppercase tracking-widest border-b-2 border-gray-200 pb-2 mb-4 text-center">Authorized Sign-off</p>
@@ -2063,6 +1882,45 @@ Condition: [Detailed Condition Only]
                                             <p className="text-center font-black text-[14px] uppercase tracking-wide text-[#2f314b]">{tenancyInfo.clerkName || 'Inspector'}</p>
                                         </div>
                                     </div>
+
+                                    {/* --- TENANT COMMENTS SECTION (rendered in view/print) --- */}
+                                    {(() => {
+                                        const activeReport = propertyReports.find(r => r.id === selectedReportId);
+                                        const comments = activeReport?.data?.tenantComments || [];
+                                        if (comments.length === 0) return null;
+                                        return (
+                                            <div className="mt-10 border-t-4 border-amber-300 pt-8 break-inside-avoid">
+                                                <h3 className="text-lg font-black text-amber-800 uppercase tracking-widest mb-6 flex items-center gap-2">
+                                                    <span className="inline-block w-3 h-3 rounded-full bg-amber-400"></span>
+                                                    Tenant Responses
+                                                </h3>
+                                                <div className="space-y-6">
+                                                    {comments.map((comment) => (
+                                                        <div key={comment.id} className="bg-amber-50 border border-amber-200 rounded-xl p-5 shadow-sm">
+                                                            <div className="flex justify-between items-start mb-3">
+                                                                <span className="font-bold text-amber-900 text-sm uppercase tracking-wide">{comment.tenantName}</span>
+                                                                <span className="text-[11px] text-amber-700 font-medium">{formatOrdinalDateTime(comment.submittedAt)}</span>
+                                                            </div>
+                                                            {comment.text && <p className="text-sm text-gray-800 leading-relaxed whitespace-pre-line mb-4">{comment.text}</p>}
+                                                            {comment.images?.length > 0 && (
+                                                                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 mt-3">
+                                                                    {comment.images.map((img) => (
+                                                                        <img
+                                                                            key={img.id}
+                                                                            src={img.url}
+                                                                            alt="Tenant photo"
+                                                                            className="w-full h-28 object-cover rounded-lg border border-amber-200 cursor-zoom-in"
+                                                                            onClick={() => setLightboxImage(img)}
+                                                                        />
+                                                                    ))}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        );
+                                    })()}
                                 </>
                             )}
 
@@ -2129,6 +1987,92 @@ Condition: [Detailed Condition Only]
                         <div className="flex justify-end gap-3 pt-4 border-t border-gray-100">
                             <button onClick={() => setShowPdfUpload(false)} disabled={isProcessing} className="px-6 py-3 font-bold text-gray-600 hover:bg-gray-100 rounded-xl transition disabled:opacity-50">Cancel</button>
                             <button onClick={handlePdfUploadSubmit} disabled={isProcessing} className="px-6 py-3 font-bold bg-[#2f314b] text-white rounded-xl hover:bg-[#2f314b]/90 transition shadow-md disabled:opacity-50">Upload & Save</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* --- TENANT COMMENT MODAL --- */}
+            {showTenantComment && (
+                <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 print:hidden p-4 transition-opacity" onClick={handleModalBackdropClick}>
+                    <div className="bg-white p-8 rounded-2xl shadow-2xl max-w-lg w-full border border-gray-200 animate-in zoom-in-95 max-h-[90vh] overflow-y-auto">
+                        <h3 className="text-xl font-black text-gray-900 mb-1 border-b-2 border-amber-100 pb-3">Add Tenant Response</h3>
+                        <p className="text-xs font-bold text-amber-700 uppercase tracking-widest mb-6">This will be appended to the saved report</p>
+
+                        <div className="space-y-4 mb-6">
+                            <div>
+                                <label className="block text-sm font-bold text-gray-700 mb-1">Tenant Name</label>
+                                <input
+                                    type="text"
+                                    placeholder="e.g. John Smith"
+                                    value={tenantCommentName}
+                                    onChange={(e) => setTenantCommentName(e.target.value)}
+                                    className="w-full p-3 border border-gray-300 rounded-lg font-medium text-sm focus:ring-amber-400 focus:border-amber-400"
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-bold text-gray-700 mb-1">Comment / Dispute</label>
+                                <textarea
+                                    rows="5"
+                                    placeholder="Tenant's comments, disputes, or observations about the report..."
+                                    value={tenantCommentText}
+                                    onChange={(e) => setTenantCommentText(e.target.value)}
+                                    className="w-full p-3 border border-gray-300 rounded-lg font-medium text-sm focus:ring-amber-400 focus:border-amber-400 resize-none"
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-bold text-gray-700 mb-1">Supporting Photos (optional)</label>
+                                <input
+                                    type="file"
+                                    multiple
+                                    accept="image/*"
+                                    onChange={handleTenantCommentImageUpload}
+                                    className="w-full text-sm font-medium border border-gray-300 rounded-lg p-2 focus:ring-amber-400 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-xs file:font-bold file:bg-amber-600 file:text-white"
+                                />
+                                {tenantCommentImages.length > 0 && (
+                                    <div className="grid grid-cols-3 gap-2 mt-3">
+                                        {tenantCommentImages.map((img, idx) => (
+                                            <div key={img.id} className="relative group rounded-lg overflow-hidden border border-gray-200">
+                                                <img
+                                                    src={img.data ? `data:${img.mimeType};base64,${img.data}` : img.url}
+                                                    alt={`Tenant photo ${idx + 1}`}
+                                                    className="w-full h-20 object-cover"
+                                                />
+                                                <button
+                                                    onClick={() => setTenantCommentImages(prev => prev.filter(i => i.id !== img.id))}
+                                                    className="absolute top-1 right-1 bg-red-600 text-white text-[10px] font-bold rounded px-1.5 py-0.5 opacity-0 group-hover:opacity-100 transition"
+                                                >✕</button>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+
+                        {loadingState.active && (
+                            <div className="mb-4 animate-in fade-in">
+                                <div className="flex justify-between text-sm text-amber-700 font-bold mb-2 uppercase tracking-wider">
+                                    <span>{loadingState.text}</span><span>{Math.round(loadingState.progress)}%</span>
+                                </div>
+                                <div className="w-full bg-gray-200 rounded-full h-2.5 overflow-hidden">
+                                    <div className="bg-amber-500 h-2.5 rounded-full transition-all duration-300" style={{ width: `${loadingState.progress}%` }}></div>
+                                </div>
+                            </div>
+                        )}
+
+                        {errorMsg && (
+                            <div className="p-4 bg-red-50 text-red-700 rounded-xl text-sm border-2 border-red-200 mb-4 font-bold">{errorMsg}</div>
+                        )}
+
+                        <div className="flex justify-end gap-3 pt-4 border-t border-gray-100">
+                            <button onClick={() => setShowTenantComment(false)} disabled={isProcessing} className="px-6 py-3 font-bold text-gray-600 hover:bg-gray-100 rounded-xl transition disabled:opacity-50">Cancel</button>
+                            <button
+                                onClick={handleSaveTenantComment}
+                                disabled={isProcessing || (!tenantCommentText.trim() && tenantCommentImages.length === 0)}
+                                className="px-6 py-3 font-bold bg-amber-600 text-white rounded-xl hover:bg-amber-700 transition shadow-md disabled:opacity-50"
+                            >
+                                Save Response
+                            </button>
                         </div>
                     </div>
                 </div>
