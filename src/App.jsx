@@ -1917,14 +1917,14 @@ Condition: [Detailed Condition Only]
                                             </div>
                                         </div>
                                     )}
-                                </div> {/* Closes <div className="space-y-8"> */}
-                            )} {/* Closes {currentView === 'wizard' && step === 2 && ( */}
+                                </div>
+                            )}
 
-                        </div> {/* Closes <div className="p-6 sm:p-8"> */}
+                        </div>
                     </React.Fragment>
-                )} {/* Closes {(currentView === 'wizard' || currentView === 'view') && ( */}
+                )}
 
-            </div> {/* Closes <div className="max-w-4xl mx-auto..."> */}
+            </div>
 
             {/* --- LEGACY PDF UPLOAD MODAL --- */}
             {showPdfUpload && (
